@@ -1,0 +1,21 @@
+galaxy_info:
+  author: Kyle Haley
+  description: Collection of modules for managing JFrog Artifactory
+  company: Rackspace
+
+  license: GPLv3
+
+  min_ansible_version: 1.2
+
+  platforms:
+  - name: GenericLinux
+    versions: all
+
+  galaxy_tags:
+  - jfrog
+  - artifactory
+  - packaging
+  - packages
+  - repository
+
+dependencies: []

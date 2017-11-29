@@ -1,0 +1,65 @@
+---
+- hosts: localhost
+  vars_prompt:
+  - name: artifactory_url
+    prompt: "What is the URL of your artifactory?"
+  - name: artifactory_user
+    prompt: "What is your artifactory user?"
+  - name: artifactory_password
+    prompt: "What your artifactory password?"
+    private: yes
+  - name: artifactory_auth_token
+    prompt: "What your artifactory auth_token?"
+    private: yes
+  roles:
+    - artifactory
+  tasks:
+  - name: create test-local-creation repo
+    artifactory_repo:
+      artifactory_url: "{{ artifactory_url }}"
+      auth_token: "{{ artifactory_auth_token }}"
+      repo: "test-local-creation"
+      state: present
+      repo_config: '{"rclass": "local"}'
+
+  - name: Delete a local repository in artifactory with auth_token
+    artifactory_repo:
+      artifactory_url: "{{ artifactory_url }}"
+      auth_token: "{{ artifactory_auth_token }}"
+      repo: "test-local-delete"
+      state: absent
+
+  - name: Create a minimal config remote repository with user/pass
+    artifactory_repo:
+      artifactory_url: "{{ artifactory_url }}"
+      username: "{{ artifactory_user }}"
+      password: "{{ artifactory_password }}"
+      repo: "test-remote-creation"
+      state: present
+      repo_config: '{"rclass": "remote", "url": "http://http://host:port/some-repo"}'
+
+  - name: Create a minimal config remote repository with auth_token
+    artifactory_repo:
+      artifactory_url: "{{ artifactory_url }}"
+      auth_token: "{{ artifactory_auth_token }}"
+      repo: "test-virtual-creation"
+      state: present
+      repo_config: '{"rclass": "virtual", "packageType": "generic"}'
+
+  - name: Update a virtual repository in artifactory with user/pass
+    artifactory_repo:
+      artifactory_url: "{{ artifactory_url }}"
+      username: "{{ artifactory_user }}"
+      password: "{{ artifactory_password }}"
+      repo: "test-virtual-update"
+      state: present
+      repo_config: '{"description": "New public description."}'
+
+  - name: Update a virtual repository and register current config after update.
+    artifactory_repo:
+      artifactory_url: "{{ artifactory_url }}"
+      auth_token: "{{ artifactory_auth_token }}"
+      repo: "test-virtual-update"
+      state: present
+      repo_config: '{"description": "New public description."}'
+    register: test_virtual_config
