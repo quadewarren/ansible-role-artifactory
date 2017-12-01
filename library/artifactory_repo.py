@@ -19,7 +19,7 @@ module: artifactory_repo
 
 short_description: Provides management operations for repositories in JFrog Artifactory
 
-version_added: "2.4"
+version_added: "2.5"
 
 description:
     - "Provides basic management operations against repositories JFrog Artifactory 5+."
@@ -31,10 +31,10 @@ options:
               you can include the repository key appended to the end of the
               url.
         required: true
-    repo:
+    name:
         description:
             - Name of the target repo to perform CRUD operations against.
-        required: false
+        required: true
     repo_position:
         description:
             - Sets the resolution order for which repos of the same type are
@@ -45,8 +45,12 @@ options:
         required: false
     repo_config:
         description:
-            - The configuration for the given repository in json format.
-              'rclass' must be defined for all create calls. If
+            - The configuration for the given repository as a json formatted
+              string. This configuration must conform to JFrog Artifactory
+              Repository Configuration JSON published at jfrog.com . Basic
+              validation is performed against required fields for Artifactory
+              5+ for required fields in create/replace calls, which is the
+              following... 'rclass' must be defined for all create calls. If
               creating a 'virtual' repository, 'packageType'
               must be defined with an appropriate type. If creating
               a 'remote' repository, 'url' must be defined in the
@@ -103,15 +107,57 @@ options:
     state:
         description:
             - The state the repository should be in. 'present' ensures that a
-              repository is created and/or it is updated, but not replaced.
-              'absent' ensures that the repository is deleted. 'read' will
-              return the configuration if the repository exists.
+              repository exists, but not replaced.
+              'absent' ensures that the repository is deleted.
+              'read' will return the configuration if the repository exists.
         required: false
         choices:
           - present
           - absent
           - read
-        default: present
+        default: read
+    rclass:
+        description:
+            - The type of remote repository you wish to create.
+        required: false
+        choices:
+          - local
+          - remote
+          - virtual
+    url:
+        description:
+            - The url for the repository.
+        required: false
+    packageType:
+        description:
+            - The packageType of the repository.
+        required: false
+        choices:
+          - bower
+          - chef
+          - composer
+          - conan
+          - debian
+          - docker
+          - gems
+          - generic
+          - gitlfs
+          - gradle
+          - ivy
+          - maven
+          - npm
+          - nuget
+          - puppet
+          - pypi
+          - sbt
+          - vagrant
+          - yum
+    repo_config_dict:
+        description:
+            - A dictionary in yaml format of valid configuration values. These
+              dictionary key/value pairs match the configuration spec of
+              repo_config.
+        required: false
 
 author:
     - Kyle Haley (@quade)
@@ -127,6 +173,29 @@ EXAMPLES = '''
     repo: "test-local-creation"
     state: present
     repo_config: '{"rclass": "local"}'
+
+# Create a local repository in artifactory with auth_token using top level params
+# config requirements
+- name: create test-local-creation repo
+  artifactory_repo:
+    artifactory_url: https://artifactory.repo.example.com
+    auth_token: my_token
+    repo: "test-local-creation"
+    state: present
+    rclass: 'local'
+
+# Create a local repository in artifactory with multiple levels of params
+# config requirements
+- name: create test-local-creation repo
+  artifactory_repo:
+    artifactory_url: https://artifactory.repo.example.com
+    auth_token: my_token
+    repo: "test-local-creation"
+    state: present
+    rclass: 'local'
+    repo_config_dict:
+        packageType: "generic"
+    repo_config: '{"description": "Test description"}'
 
 # Delete a local repository in artifactory with auth_token
 - name: delete test-local-delete repo
@@ -183,6 +252,17 @@ EXAMPLES = '''
 - name: dump test_virtual_config config json
   debug:
     msg: '{{ test_virtual_config.config }}'
+
+# Update a virtual repository with a config hash
+- name: update test-virtual-update repo
+  artifactory_repo:
+    artifactory_url: https://artifactory.repo.example.com
+    auth_token: your_token
+    repo: "test-virtual-update"
+    state: present
+    repo_config_dict:
+      description: "New public description"
+      url: "http://new.url.example.com"
 '''
 
 RETURN = '''
@@ -211,6 +291,7 @@ import json
 
 import ansible.module_utils.six.moves.urllib.error as urllib_error
 from ansible.module_utils.basic import AnsibleModule
+from ansible.module_utils.six import iteritems
 from ansible.module_utils.urls import open_url
 
 LOCAL_RCLASS = "local"
@@ -219,33 +300,35 @@ VIRTUAL_RCLASS = "virtual"
 
 VALID_RCLASSES = [LOCAL_RCLASS, REMOTE_RCLASS, VIRTUAL_RCLASS]
 
+VALID_PACKAGETYPES = ["bower",
+                      "chef",
+                      "composer",
+                      "conan",
+                      "debian",
+                      "docker",
+                      "gems",
+                      "generic",
+                      "gitlfs",
+                      "gradle",
+                      "ivy",
+                      "maven",
+                      "npm",
+                      "nuget",
+                      "puppet",
+                      "pypi",
+                      "sbt",
+                      "vagrant",
+                      "yum"]
+
 REQUIRED_REPO_CONFIG = {
     "rclass":
         {"valid_values": VALID_RCLASSES,
          "rclass_requires": VALID_RCLASSES},
     "packageType":
-        {"valid_values": ["bower",
-                          "chef",
-                          "composer",
-                          "conan",
-                          "debian",
-                          "docker",
-                          "gems",
-                          "generic",
-                          "gitlfs",
-                          "gradle",
-                          "ivy",
-                          "maven",
-                          "npm",
-                          "nuget",
-                          "puppet",
-                          "pypi",
-                          "sbt",
-                          "vagrant",
-                          "yum"],
+        {"valid_values": VALID_PACKAGETYPES,
          "rclass_requires": [VIRTUAL_RCLASS]},
     "url":
-        {"valid_values": None,
+        {"valid_values": '',
          "rclass_requires": [REMOTE_RCLASS]}}
 
 
@@ -277,18 +360,34 @@ class ArtifactoryRepositoryManagement:
         if auth_token:
             self.headers["X-JFrog-Art-Api"] = auth_token
 
+    def convert_repo_config_to_dict(self, repo_config):
+        if isinstance(repo_config, dict):
+            return repo_config
+        else:
+            try:
+                test_dict = ast.literal_eval(repo_config)
+                if isinstance(test_dict, dict):
+                    repo_config = test_dict
+                else:
+                    raise ValueError()
+            except ValueError:
+                raise ConfigValueTypeMismatch("Configuration data provided "
+                                              "is not valid json.")
+            except SyntaxError:
+                raise ConfigValueTypeMismatch("Configuration data provided "
+                                              "is not valid json.")
+        return repo_config
+
     def get_repositories(self):
-        return self.__query_artifactory(self.artifactory_url, 'GET')
+        return self.query_artifactory(self.artifactory_url, 'GET')
 
     def get_repository_config(self):
-        return self.__query_artifactory(self.working_url, 'GET')
+        return self.query_artifactory(self.working_url, 'GET')
 
     def create_repository(self):
-        """ create_repository functions as both CREATE and REPLACE calls """
-
+        self.repo_config = self.convert_repo_config_to_dict(self.repo_config)
+        self.validate_config_required_values(self.repo_config)
         serial_config_data = self._serialize_config_data(self.repo_config)
-        self.validate_config_required_values(serial_config_data)
-
         create_repo_url = self.working_url
         if self.repo_position:
             if isinstance(self.repo_position, int):
@@ -297,18 +396,20 @@ class ArtifactoryRepositoryManagement:
             else:
                 raise ValueError("repo_position must be an integer.")
 
-        return self.__query_artifactory(create_repo_url, 'PUT',
-                                        data=serial_config_data)
+        return self.query_artifactory(create_repo_url, 'PUT',
+                                      data=serial_config_data)
 
     def update_repository_config(self):
+        self.repo_config = self.convert_repo_config_to_dict(self.repo_config)
+        self.validate_config_values(self.repo_config)
         serial_config_data = self._serialize_config_data(self.repo_config)
-        return self.__query_artifactory(self.working_url, 'POST',
-                                        data=serial_config_data)
+        return self.query_artifactory(self.working_url, 'POST',
+                                      data=serial_config_data)
 
     def delete_repository(self):
-        return self.__query_artifactory(self.working_url, 'DELETE')
+        return self.query_artifactory(self.working_url, 'DELETE')
 
-    def __query_artifactory(self, url, method, data=None):
+    def query_artifactory(self, url, method, data=None):
         if self.auth_token:
             response = open_url(url, data=data, headers=self.headers,
                                 method=method,
@@ -330,52 +431,45 @@ class ArtifactoryRepositoryManagement:
     def _serialize_config_data(self, config_data):
         if not config_data:
             raise InvalidConfigurationData("Config is null or empty.")
-        serial_config_data = self.get_serialized_config_to_json(config_data)
+        serial_config_data = json.dumps(self.repo_config)
         return serial_config_data
 
-    def get_serialized_config_to_json(self, config_data):
-        serial_config_data = ''
-        if isinstance(config_data, dict):
-            serial_config_data = json.dumps(config_data)
-        elif isinstance(config_data, str):
-            try:
-                test_dict = ast.literal_eval(config_data)
-                if isinstance(test_dict, dict):
-                    serial_config_data = json.dumps(test_dict)
-                else:
-                    raise ValueError()
-            except ValueError:
-                raise ConfigValueTypeMismatch("Configuration data provided "
-                                              "is not valid json.")
-        else:
-            raise ConfigValueTypeMismatch("Configuration data provided is not "
-                                          "valid json.")
-        return serial_config_data
-
-    def validate_config_required_values(self, serial_config_data):
-        dict_config_data = ast.literal_eval(serial_config_data)
+    def validate_config_required_values(self, dict_config_data=None):
+        if not dict_config_data:
+            dict_config_data = \
+                self.convert_repo_config_to_dict(self.repo_config)
         self.validate_config_against_rclass(dict_config_data)
+        self.validate_config_values(dict_config_data)
+
+    def validate_config_values(self, dict_config_data=None):
+        if not dict_config_data:
+            dict_config_data = \
+                self.convert_repo_config_to_dict(self.repo_config)
         for config_key in dict_config_data:
             if config_key in REQUIRED_REPO_CONFIG:
-                self.validate_config_value(config_key,
-                                           dict_config_data[config_key])
+                valid_values = REQUIRED_REPO_CONFIG[config_key]["valid_values"]
+                config_val = dict_config_data[config_key]
+                if valid_values and config_val not in valid_values:
+                    except_message = ("'%s' is not a valid value for key %s"
+                                      % (config_val, config_key))
+                    raise InvalidConfigurationData(except_message)
 
-    def validate_config_value(self, config_key, config_val):
-        valid_values = REQUIRED_REPO_CONFIG[config_key]["valid_values"]
-        if valid_values and config_val not in valid_values:
-            except_message = ("'%s' is not a valid value for key %s"
-                              % (config_val, config_key))
-            raise InvalidConfigurationData(except_message)
-
-    def validate_config_against_rclass(self, dict_config_data):
+    def validate_config_against_rclass(self, dict_config_data=None):
+        if not dict_config_data:
+            dict_config_data = \
+                self.convert_repo_config_to_dict(self.repo_config)
         if "rclass" in dict_config_data:
             rclass_in_config = dict_config_data["rclass"]
         else:
             raise InvalidConfigurationData("rclass key is missing in config.")
 
         if rclass_in_config not in VALID_RCLASSES:
-            raise InvalidConfigurationData("rclass is not valid.")
+            except_message = "rclass '%s' is not valid. " % rclass_in_config
+            except_message += "valid rclasses: "
+            except_message += ",".join(VALID_RCLASSES)
+            raise InvalidConfigurationData(except_message)
 
+        # create required keys to validate against
         required_keys = []
         for required_key in REQUIRED_REPO_CONFIG:
             key_definition = REQUIRED_REPO_CONFIG[required_key]
@@ -397,11 +491,49 @@ class InvalidConfigurationData(Exception):
     pass
 
 
+def validate_top_level_params(top_level_param, module, val_fail_msgs,
+                              repo_config, repo_config_dict):
+    top_level_fail = ("Conflicting config values. "
+                      "top level parameter {1} != {0}[{1}]. "
+                      "Only one config value need be set. ")
+    rcd_fail_msg = ""
+    rc_fail_msg = ""
+    if not top_level_param or not module.params[top_level_param]:
+        return
+    value = module.params[top_level_param]
+    if repo_config_dict and top_level_param in repo_config_dict:
+        if value != repo_config_dict[top_level_param]:
+            rcd_fail_msg = top_level_fail.format('repo_config_dict',
+                                                 top_level_param)
+            val_fail_msgs.append(rcd_fail_msg)
+    if repo_config and top_level_param in repo_config:
+        if value != repo_config[top_level_param]:
+            rc_fail_msg = top_level_fail.format('repo_config',
+                                                top_level_param)
+            val_fail_msgs.append(rc_fail_msg)
+
+
+def validate_config_params(val_fail_msgs, repo_config, repo_config_dict):
+    if not repo_config_dict or not repo_config:
+        return
+    for key, val in iteritems(repo_config):
+        if key in repo_config_dict:
+            if repo_config_dict[key] != repo_config[key]:
+                fail_msg = ("Conflicting config values. "
+                            "repo_config[{0}] != "
+                            "repo_config_dict[{0}]. "
+                            "Only one config value need be "
+                            "set. ").format(key)
+                val_fail_msgs.append(fail_msg)
+
+
 def run_module():
     state_map = ['present', 'absent', 'read']
+    rclass_state_map = VALID_RCLASSES
+    packageType_state_map = VALID_PACKAGETYPES
     module_args = dict(
         artifactory_url=dict(type='str', required=True),
-        repo=dict(type='str', default=None),
+        name=dict(type='str', default=None, required=True),
         repo_position=dict(type='int', default=None),
         repo_config=dict(type='str', default=None),
         username=dict(type='str', default=None),
@@ -411,7 +543,12 @@ def run_module():
         client_cert=dict(type='path', default=None),
         client_key=dict(type='path', default=None),
         force_basic_auth=dict(type='bool', default=False),
-        state=dict(type='str', default='present', choices=state_map),
+        state=dict(type='str', default='read', choices=state_map),
+        rclass=dict(type='str', default=None, choices=rclass_state_map),
+        packageType=dict(type='str', default=None,
+                         choices=packageType_state_map),
+        url=dict(type='str', default=None),
+        repo_config_dict=dict(type='dict', default=dict()),
     )
 
     result = dict(
@@ -426,15 +563,15 @@ def run_module():
         required_together=[['username', 'password']],
         required_one_of=[['password', 'auth_token']],
         mutually_exclusive=[['password', 'auth_token']],
-        required_if=[['state', 'present', ['artifactory_url', 'repo',
-                                           'repo_config']],
-                     ['state', 'absent', ['artifactory_url', 'repo']],
-                     ['state', 'read', ['artifactory_url', 'repo']]],
+        required_if=[['state', 'present', ['artifactory_url', 'name']],
+                     ['state', 'update', ['artifactory_url', 'name']],
+                     ['state', 'absent', ['artifactory_url', 'name']],
+                     ['state', 'read', ['artifactory_url', 'name']]],
         supports_check_mode=True,
     )
 
     artifactory_url = module.params['artifactory_url']
-    repository = module.params['repo']
+    repository = module.params['name']
     repo_position = module.params['repo_position']
     repo_config = module.params['repo_config']
     username = module.params['username']
@@ -445,14 +582,39 @@ def run_module():
     client_key = module.params['client_key']
     force_basic_auth = module.params['force_basic_auth']
     state = module.params['state']
+    repo_config_dict = module.params['repo_config_dict']
+
+    if repo_config:
+        # temporarily convert to dict for validation
+        repo_config = ast.literal_eval(repo_config)
+
+    val_fail_messages = []
+
+    validate_config_params(val_fail_messages, repo_config, repo_config_dict)
+
+    validate_top_level_params('rclass', module, val_fail_messages, repo_config,
+                              repo_config_dict)
+    validate_top_level_params('packageType', module, val_fail_messages,
+                              repo_config, repo_config_dict)
+    validate_top_level_params('url', module, val_fail_messages, repo_config,
+                              repo_config_dict)
+
+    repo_dict = dict()
+    if module.params['rclass']:
+        repo_dict['rclass'] = module.params['rclass']
+    if module.params['packageType']:
+        repo_dict['packageType'] = module.params['packageType']
+    if module.params['url']:
+        repo_dict['url'] = module.params['url']
+    if repo_config:
+        repo_dict.update(repo_config)
+    if repo_config_dict:
+        repo_dict.update(repo_config_dict)
+    repo_config = json.dumps(repo_dict)
 
     result['original_message'] = ("Perform state '%s' against repo '%s' "
                                   "within artifactory '%s'"
                                   % (state, repository, artifactory_url))
-
-    if module.check_mode:
-        result['message'] = 'check_mode success'
-        module.exit_json(**result)
 
     artifactory_repo = ArtifactoryRepositoryManagement(
         artifactory_url=artifactory_url,
@@ -467,19 +629,47 @@ def run_module():
         client_key=client_key,
         force_basic_auth=force_basic_auth)
 
-    failure_message = None
+    all_repos = None
     try:
         all_repos = artifactory_repo.get_repositories()
-    except urllib_error.HTTPError as e:
-        failure_message = e.read()
-        # Fail fast here, no other feature will work if this call fails
+    except urllib_error.HTTPError as http_e:
+        val_fail_messages.append(http_e.read())
+    except urllib_error.URLError as url_e:
+        val_fail_messages.append(str(url_e))
+
+    repository_exists = False
+    if all_repos:
+        all_repos = json.loads(all_repos.read())
+        for repo in all_repos:
+            if 'key' in repo and repo['key'] == repository:
+                repository_exists = True
+    else:
+        val_fail_messages.append("Could not access artifactory_url: %s."
+                                 % artifactory_url)
+
+    try:
+        # Now that configs are lined up, verify required values in configs
+        if state == 'present':
+            if not repository_exists:
+                artifactory_repo.validate_config_required_values()
+            else:
+                artifactory_repo.validate_config_values()
+    except ConfigValueTypeMismatch as cvtm:
+        val_fail_messages.append(cvtm.message)
+    except InvalidConfigurationData as icd:
+        val_fail_messages.append(icd.message)
+
+    # Populate failure messages
+    failure_message = "".join(val_fail_messages)
+
+    # Fail fast here, conflicting config values or invalid urls should not
+    # be resolved.
+    if failure_message:
         module.fail_json(msg=failure_message, **result)
 
-    all_repos = json.loads(all_repos.read())
-    repository_exists = False
-    for repo in all_repos:
-        if 'key' in repo and repo['key'] == repository:
-            repository_exists = True
+    if module.check_mode:
+        result['message'] = 'check_mode success'
+        module.exit_json(**result)
 
     repo_not_exists_msg = ("Repository '%s' does not exist." % repository)
     resp_is_invalid_failure = ("An unknown error occurred while attempting to "
