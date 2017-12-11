@@ -110,11 +110,18 @@ options:
               repository exists, but not replaced.
               'absent' ensures that the repository is deleted.
               'read' will return the configuration if the repository exists.
+              'list' will return a list of all repositories that currently
+              exist in the target artifactory. NOTE: The configuration supplied
+              will overwrite the configuration that exists. If you wish to, for
+              instance, append new repositories to a virtual repository, you
+              will need to construct the complete list outside of the module
+              and pass it in.
         required: false
         choices:
           - present
           - absent
           - read
+          - list
         default: read
     rclass:
         description:
@@ -170,7 +177,7 @@ EXAMPLES = '''
   artifactory_repo:
     artifactory_url: https://artifactory.repo.example.com
     auth_token: my_token
-    repo: "test-local-creation"
+    name: test-local-creation
     state: present
     repo_config: '{"rclass": "local"}'
 
@@ -180,9 +187,9 @@ EXAMPLES = '''
   artifactory_repo:
     artifactory_url: https://artifactory.repo.example.com
     auth_token: my_token
-    repo: "test-local-creation"
+    name: test-local-creation
     state: present
-    rclass: 'local'
+    rclass: local
 
 # Create a local repository in artifactory with multiple levels of params
 # config requirements
@@ -190,11 +197,11 @@ EXAMPLES = '''
   artifactory_repo:
     artifactory_url: https://artifactory.repo.example.com
     auth_token: my_token
-    repo: "test-local-creation"
+    name: test-local-creation
     state: present
-    rclass: 'local'
+    rclass: local
     repo_config_dict:
-        packageType: "generic"
+        packageType: generic
     repo_config: '{"description": "Test description"}'
 
 # Delete a local repository in artifactory with auth_token
@@ -202,7 +209,7 @@ EXAMPLES = '''
   artifactory_repo:
     artifactory_url: https://artifactory.repo.example.com
     auth_token: your_token
-    repo: "test-local-delete"
+    name: test-local-delete
     state: absent
 
 # Create a remote repository in artifactory with username/password with
@@ -212,7 +219,7 @@ EXAMPLES = '''
     artifactory_url: https://artifactory.repo.example.com
     username: your_username
     password: your_pass
-    repo: "test-remote-creation"
+    name: test-remote-creation
     state: present
     repo_config: '{"rclass": "remote", "url": "http://http://host:port/some-repo"}'
 
@@ -222,7 +229,7 @@ EXAMPLES = '''
   artifactory_repo:
     artifactory_url: https://artifactory.repo.example.com
     auth_token: your_token
-    repo: "test-virtual-creation"
+    name: test-virtual-creation
     state: present
     repo_config: '{"rclass": "virtual", "packageType": "generic"}'
 
@@ -232,16 +239,7 @@ EXAMPLES = '''
     artifactory_url: https://artifactory.repo.example.com
     username: your_username
     password: your_pass
-    repo: "test-virtual-update"
-    state: present
-    repo_config: '{"description": "New public description."}'
-
-# Update a virtual repository and register current config after update.
-- name: update test-virtual-update repo
-  artifactory_repo:
-    artifactory_url: https://artifactory.repo.example.com
-    auth_token: your_token
-    repo: "test-virtual-update"
+    name: test-virtual-update
     state: present
     repo_config: '{"description": "New public description."}'
   register: test_virtual_config
@@ -254,15 +252,20 @@ EXAMPLES = '''
     msg: '{{ test_virtual_config.config }}'
 
 # Update a virtual repository with a config hash
+# NOTE: Configuration provided replaces the existing configuration, so
+# if you want to append values to an existing list, that list needs to be
+# constructed outside of the module and passed in.
 - name: update test-virtual-update repo
   artifactory_repo:
     artifactory_url: https://artifactory.repo.example.com
     auth_token: your_token
-    repo: "test-virtual-update"
+    name: test-virtual-update
     state: present
     repo_config_dict:
-      description: "New public description"
-      url: "http://new.url.example.com"
+      description: "Another new public description"
+      repositories:
+        - pypi-remote
+        - mypi-local
 '''
 
 RETURN = '''
@@ -528,7 +531,7 @@ def validate_config_params(val_fail_msgs, repo_config, repo_config_dict):
 
 
 def run_module():
-    state_map = ['present', 'absent', 'read']
+    state_map = ['present', 'absent', 'read', 'list']
     rclass_state_map = VALID_RCLASSES
     packageType_state_map = VALID_PACKAGETYPES
     module_args = dict(
@@ -564,8 +567,8 @@ def run_module():
         required_one_of=[['password', 'auth_token']],
         mutually_exclusive=[['password', 'auth_token']],
         required_if=[['state', 'present', ['artifactory_url', 'name']],
-                     ['state', 'update', ['artifactory_url', 'name']],
                      ['state', 'absent', ['artifactory_url', 'name']],
+                     ['state', 'list', ['artifactory_url', 'name']],
                      ['state', 'read', ['artifactory_url', 'name']]],
         supports_check_mode=True,
     )
@@ -630,22 +633,32 @@ def run_module():
         force_basic_auth=force_basic_auth)
 
     all_repos = None
-    try:
-        all_repos = artifactory_repo.get_repositories()
-    except urllib_error.HTTPError as http_e:
-        val_fail_messages.append(http_e.read())
-    except urllib_error.URLError as url_e:
-        val_fail_messages.append(str(url_e))
-
     repository_exists = False
-    if all_repos:
-        all_repos = json.loads(all_repos.read())
-        for repo in all_repos:
-            if 'key' in repo and repo['key'] == repository:
-                repository_exists = True
-    else:
-        val_fail_messages.append("Could not access artifactory_url: %s."
-                                 % artifactory_url)
+    try:
+        all_repos = artifactory_repo.get_repository_config()
+        repository_exists = True
+    except urllib_error.HTTPError as http_e:
+        if http_e.getcode() == 400:
+            # Instead of throwing a 404, a 400 is thrown if a repo doesn't
+            # exist. Have to fall through and assume the repo doesn't exist
+            # and that another error did not occur. If there is another problem
+            # it will have to be caught by try/catch blocks further below.
+            pass
+        else:
+            message = ("HTTP response code was '%s'. Response message was"
+                       " '%s'. " % (http_e.getcode(), http_e.read()))
+            val_fail_messages.append(message)
+    except urllib_error.URLError as url_e:
+        message = ("A generic URLError was thrown. URLError: %s" % str(url_e))
+        val_fail_messages.append(message)
+    except SyntaxError as s_e:
+        message = ("%s. Response from artifactory was malformed: '%s' . "
+                   % (str(s_e), all_repos))
+        val_fail_messages.append(message)
+    except ValueError as v_e:
+        message = ("%s. Response from artifactory was malformed: '%s' . "
+                   % (str(v_e), all_repos))
+        val_fail_messages.append(message)
 
     try:
         # Now that configs are lined up, verify required values in configs
@@ -655,9 +668,9 @@ def run_module():
             else:
                 artifactory_repo.validate_config_values()
     except ConfigValueTypeMismatch as cvtm:
-        val_fail_messages.append(cvtm.message)
+        val_fail_messages.append(cvtm.message + ". ")
     except InvalidConfigurationData as icd:
-        val_fail_messages.append(icd.message)
+        val_fail_messages.append(icd.message + ". ")
 
     # Populate failure messages
     failure_message = "".join(val_fail_messages)
@@ -675,7 +688,29 @@ def run_module():
     resp_is_invalid_failure = ("An unknown error occurred while attempting to "
                                "'%s' repo '%s'. Response should "
                                "not be None.")
-    if state == 'read':
+    if state == 'list':
+        result['message'] = ("List of all repos against artifactory_url: %s"
+                             % artifactory_url)
+        try:
+            all_repos = artifactory_repo.get_repositories()
+            result['config'] = json.loads(all_repos.read())
+        except urllib_error.HTTPError as http_e:
+            message = ("HTTP response code was '%s'. Response message was"
+                       " '%s'. " % (http_e.getcode(), http_e.read()))
+            failure_message = message
+        except urllib_error.URLError as url_e:
+            message = ("A generic URLError was thrown. URLError: %s"
+                       % str(url_e))
+            failure_message = message
+        except SyntaxError as s_e:
+            message = ("%s. Response from artifactory was malformed: '%s' . "
+                       % (str(s_e), all_repos))
+            failure_message = message
+        except ValueError as v_e:
+            message = ("%s. Response from artifactory was malformed: '%s' . "
+                       % (str(v_e), all_repos))
+            failure_message = message
+    elif state == 'read':
         if not repository_exists:
             result['message'] = repo_not_exists_msg
         else:
@@ -698,6 +733,8 @@ def run_module():
         # config.
         try:
             if not repository_exists:
+                result['message'] = ('Attempting to create repo: %s'
+                                     % repository)
                 resp = artifactory_repo.create_repository()
                 if resp:
                     result['message'] = resp.read()
@@ -706,6 +743,8 @@ def run_module():
                     failure_message = (resp_is_invalid_failure
                                        % (state, repository))
             else:
+                result['message'] = ('Attempting to update repo: %s'
+                                     % repository)
                 current_config = artifactory_repo.get_repository_config()
                 current_config = json.loads(current_config.read())
                 desired_config = ast.literal_eval(repo_config)
