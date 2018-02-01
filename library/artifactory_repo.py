@@ -1,6 +1,16 @@
 #!/usr/bin/python
-# Copyright: Ansible Project
-# GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
@@ -111,7 +121,7 @@ options:
               'absent' ensures that the repository is deleted.
               'read' will return the configuration if the repository exists.
               'list' will return a list of all repositories that currently
-              exist in the target artifactory. NOTE: The configuration supplied
+              exist in the target artifactory. The configuration supplied
               will overwrite the configuration that exists. If you wish to, for
               instance, append new repositories to a virtual repository, you
               will need to construct the complete list outside of the module
@@ -165,9 +175,13 @@ options:
               dictionary key/value pairs match the configuration spec of
               repo_config.
         required: false
+    repoLayoutRef:
+        description:
+            - The name of the target layout for this repository.
+        required: false
 
 author:
-    - Kyle Haley (@quade)
+    - Kyle Haley (@quadewarren)
 '''
 
 EXAMPLES = '''
@@ -252,7 +266,7 @@ EXAMPLES = '''
     msg: '{{ test_virtual_config.config }}'
 
 # Update a virtual repository with a config hash
-# NOTE: Configuration provided replaces the existing configuration, so
+# Configuration provided replaces the existing configuration, so
 # if you want to append values to an existing list, that list needs to be
 # constructed outside of the module and passed in.
 - name: update test-virtual-update repo
@@ -292,10 +306,11 @@ config:
 import ast
 import json
 
+import ansible.module_utils.artifactory as art_base
 import ansible.module_utils.six.moves.urllib.error as urllib_error
+
 from ansible.module_utils.basic import AnsibleModule
-from ansible.module_utils.six import iteritems
-from ansible.module_utils.urls import open_url
+
 
 LOCAL_RCLASS = "local"
 REMOTE_RCLASS = "remote"
@@ -323,63 +338,42 @@ VALID_PACKAGETYPES = ["bower",
                       "vagrant",
                       "yum"]
 
-REQUIRED_REPO_CONFIG = {
+KEY_CONFIG_MAP = {
     "rclass":
         {"valid_values": VALID_RCLASSES,
-         "rclass_requires": VALID_RCLASSES},
+         "values_require_keys":
+            {VIRTUAL_RCLASS: ["packageType"],
+             REMOTE_RCLASS: ["url"]},
+         "always_required": True},
     "packageType":
-        {"valid_values": VALID_PACKAGETYPES,
-         "rclass_requires": [VIRTUAL_RCLASS]},
-    "url":
-        {"valid_values": '',
-         "rclass_requires": [REMOTE_RCLASS]}}
+        {"valid_values": VALID_PACKAGETYPES}}
+
+URI_CONFIG_MAP = {"api/repositories": KEY_CONFIG_MAP}
 
 
-class ArtifactoryRepositoryManagement:
+class ArtifactoryRepoManagement(art_base.ArtifactoryBase):
     def __init__(self, artifactory_url, repo=None, repo_position=None,
                  repo_config=None, username=None, password=None,
                  auth_token=None, validate_certs=False, client_cert=None,
-                 client_key=None, force_basic_auth=False):
+                 client_key=None, force_basic_auth=False, config_map=None):
+        super(ArtifactoryRepoManagement, self).__init__(
+            username=username,
+            password=password,
+            auth_token=auth_token,
+            validate_certs=validate_certs,
+            client_cert=client_cert,
+            client_key=client_key,
+            force_basic_auth=force_basic_auth,
+            config_map=config_map)
         self.artifactory_url = artifactory_url
         self.repo = repo
         self.repo_position = repo_position
         self.repo_config = repo_config
 
-        self.username = username
-        self.password = password
-        self.auth_token = auth_token
-
-        self.validate_certs = validate_certs
-        self.client_cert = client_cert
-        self.client_key = client_key
-        self.force_basic_auth = force_basic_auth
-
         if self.repo:
             self.working_url = '%s/%s' % (self.artifactory_url, self.repo)
         else:
             self.working_url = self.artifactory_url
-
-        self.headers = {"Content-Type": "application/json"}
-        if auth_token:
-            self.headers["X-JFrog-Art-Api"] = auth_token
-
-    def convert_repo_config_to_dict(self, repo_config):
-        if isinstance(repo_config, dict):
-            return repo_config
-        else:
-            try:
-                test_dict = ast.literal_eval(repo_config)
-                if isinstance(test_dict, dict):
-                    repo_config = test_dict
-                else:
-                    raise ValueError()
-            except ValueError:
-                raise ConfigValueTypeMismatch("Configuration data provided "
-                                              "is not valid json.")
-            except SyntaxError:
-                raise ConfigValueTypeMismatch("Configuration data provided "
-                                              "is not valid json.")
-        return repo_config
 
     def get_repositories(self):
         return self.query_artifactory(self.artifactory_url, 'GET')
@@ -387,10 +381,12 @@ class ArtifactoryRepositoryManagement:
     def get_repository_config(self):
         return self.query_artifactory(self.working_url, 'GET')
 
+    def delete_repository(self):
+        return self.query_artifactory(self.working_url, 'DELETE')
+
     def create_repository(self):
-        self.repo_config = self.convert_repo_config_to_dict(self.repo_config)
-        self.validate_config_required_values(self.repo_config)
-        serial_config_data = self._serialize_config_data(self.repo_config)
+        method = 'PUT'
+        serial_config_data = self.get_valid_conf(method)
         create_repo_url = self.working_url
         if self.repo_position:
             if isinstance(self.repo_position, int):
@@ -399,135 +395,23 @@ class ArtifactoryRepositoryManagement:
             else:
                 raise ValueError("repo_position must be an integer.")
 
-        return self.query_artifactory(create_repo_url, 'PUT',
+        return self.query_artifactory(create_repo_url, method,
                                       data=serial_config_data)
 
     def update_repository_config(self):
-        self.repo_config = self.convert_repo_config_to_dict(self.repo_config)
-        self.validate_config_values(self.repo_config)
-        serial_config_data = self._serialize_config_data(self.repo_config)
-        return self.query_artifactory(self.working_url, 'POST',
+        method = 'POST'
+        serial_config_data = self.get_valid_conf(method)
+        return self.query_artifactory(self.working_url, method,
                                       data=serial_config_data)
 
-    def delete_repository(self):
-        return self.query_artifactory(self.working_url, 'DELETE')
-
-    def query_artifactory(self, url, method, data=None):
-        if self.auth_token:
-            response = open_url(url, data=data, headers=self.headers,
-                                method=method,
-                                validate_certs=self.validate_certs,
-                                client_cert=self.client_cert,
-                                client_key=self.client_key,
-                                force_basic_auth=self.force_basic_auth)
-        else:
-            response = open_url(url, data=data, headers=self.headers,
-                                method=method,
-                                validate_certs=self.validate_certs,
-                                client_cert=self.client_cert,
-                                client_key=self.client_key,
-                                force_basic_auth=self.force_basic_auth,
-                                url_username=self.username,
-                                url_password=self.password)
-        return response
-
-    def _serialize_config_data(self, config_data):
-        if not config_data:
-            raise InvalidConfigurationData("Config is null or empty.")
-        serial_config_data = json.dumps(self.repo_config)
+    def get_valid_conf(self, method):
+        config_dict = self.convert_config_to_dict(self.repo_config)
+        if method == 'PUT':
+            self.validate_config_required_keys(self.artifactory_url,
+                                               config_dict)
+        self.validate_config_values(self.artifactory_url, config_dict)
+        serial_config_data = self.serialize_config_data(config_dict)
         return serial_config_data
-
-    def validate_config_required_values(self, dict_config_data=None):
-        if not dict_config_data:
-            dict_config_data = \
-                self.convert_repo_config_to_dict(self.repo_config)
-        self.validate_config_against_rclass(dict_config_data)
-        self.validate_config_values(dict_config_data)
-
-    def validate_config_values(self, dict_config_data=None):
-        if not dict_config_data:
-            dict_config_data = \
-                self.convert_repo_config_to_dict(self.repo_config)
-        for config_key in dict_config_data:
-            if config_key in REQUIRED_REPO_CONFIG:
-                valid_values = REQUIRED_REPO_CONFIG[config_key]["valid_values"]
-                config_val = dict_config_data[config_key]
-                if valid_values and config_val not in valid_values:
-                    except_message = ("'%s' is not a valid value for key %s"
-                                      % (config_val, config_key))
-                    raise InvalidConfigurationData(except_message)
-
-    def validate_config_against_rclass(self, dict_config_data=None):
-        if not dict_config_data:
-            dict_config_data = \
-                self.convert_repo_config_to_dict(self.repo_config)
-        if "rclass" in dict_config_data:
-            rclass_in_config = dict_config_data["rclass"]
-        else:
-            raise InvalidConfigurationData("rclass key is missing in config.")
-
-        if rclass_in_config not in VALID_RCLASSES:
-            except_message = "rclass '%s' is not valid. " % rclass_in_config
-            except_message += "valid rclasses: "
-            except_message += ",".join(VALID_RCLASSES)
-            raise InvalidConfigurationData(except_message)
-
-        # create required keys to validate against
-        required_keys = []
-        for required_key in REQUIRED_REPO_CONFIG:
-            key_definition = REQUIRED_REPO_CONFIG[required_key]
-            if rclass_in_config in key_definition["rclass_requires"]:
-                required_keys.append(required_key)
-
-        for required_key in required_keys:
-            if required_key not in dict_config_data:
-                except_message = ("rclass '%s' requires defined config key "
-                                  "'%s'" % (rclass_in_config, required_key))
-                raise InvalidConfigurationData(except_message)
-
-
-class ConfigValueTypeMismatch(Exception):
-    pass
-
-
-class InvalidConfigurationData(Exception):
-    pass
-
-
-def validate_top_level_params(top_level_param, module, val_fail_msgs,
-                              repo_config, repo_config_dict):
-    top_level_fail = ("Conflicting config values. "
-                      "top level parameter {1} != {0}[{1}]. "
-                      "Only one config value need be set. ")
-    rcd_fail_msg = ""
-    rc_fail_msg = ""
-    if not top_level_param or not module.params[top_level_param]:
-        return
-    value = module.params[top_level_param]
-    if repo_config_dict and top_level_param in repo_config_dict:
-        if value != repo_config_dict[top_level_param]:
-            rcd_fail_msg = top_level_fail.format('repo_config_dict',
-                                                 top_level_param)
-            val_fail_msgs.append(rcd_fail_msg)
-    if repo_config and top_level_param in repo_config:
-        if value != repo_config[top_level_param]:
-            rc_fail_msg = top_level_fail.format('repo_config',
-                                                top_level_param)
-            val_fail_msgs.append(rc_fail_msg)
-
-
-def validate_config_params(val_fail_msgs, repo_config, repo_config_dict):
-    if not repo_config_dict or not repo_config:
-        return
-    for key, val in iteritems(repo_config):
-        if key in repo_config_dict:
-            if repo_config_dict[key] != repo_config[key]:
-                fail_msg = ("Conflicting config values. "
-                            "repo_config[{0}] != "
-                            "repo_config_dict[{0}]. "
-                            "Only one config value need be "
-                            "set. ").format(key)
-                val_fail_msgs.append(fail_msg)
 
 
 def run_module():
@@ -536,7 +420,7 @@ def run_module():
     packageType_state_map = VALID_PACKAGETYPES
     module_args = dict(
         artifactory_url=dict(type='str', required=True),
-        name=dict(type='str', default=None, required=True),
+        name=dict(type='str', required=True),
         repo_position=dict(type='int', default=None),
         repo_config=dict(type='str', default=None),
         username=dict(type='str', default=None),
@@ -551,6 +435,7 @@ def run_module():
         packageType=dict(type='str', default=None,
                          choices=packageType_state_map),
         url=dict(type='str', default=None),
+        repoLayoutRef=dict(type='str', default=None),
         repo_config_dict=dict(type='dict', default=dict()),
     )
 
@@ -591,24 +476,49 @@ def run_module():
         # temporarily convert to dict for validation
         repo_config = ast.literal_eval(repo_config)
 
-    val_fail_messages = []
+    fail_messages = []
 
-    validate_config_params(val_fail_messages, repo_config, repo_config_dict)
+    fails = art_base.validate_config_params(repo_config, repo_config_dict,
+                                            'repo_config', 'repo_config_dict')
+    fail_messages.extend(fails)
 
-    validate_top_level_params('rclass', module, val_fail_messages, repo_config,
-                              repo_config_dict)
-    validate_top_level_params('packageType', module, val_fail_messages,
-                              repo_config, repo_config_dict)
-    validate_top_level_params('url', module, val_fail_messages, repo_config,
-                              repo_config_dict)
+    fails = art_base.validate_top_level_params('rclass', module, repo_config,
+                                               repo_config_dict, 'repo_config',
+                                               'repo_config_dict')
+    fail_messages.extend(fails)
+    fails = art_base.validate_top_level_params('packageType', module,
+                                               repo_config, repo_config_dict,
+                                               'repo_config',
+                                               'repo_config_dict')
+    fail_messages.extend(fails)
+    fails = art_base.validate_top_level_params('url', module, repo_config,
+                                               repo_config_dict, 'repo_config',
+                                               'repo_config_dict')
+    fail_messages.extend(fails)
+    fails = art_base.validate_top_level_params('repoLayoutRef',
+                                               module, repo_config,
+                                               repo_config_dict, 'repo_config',
+                                               'repo_config_dict')
+    fail_messages.extend(fails)
+
+    # Populate failure messages
+    failure_message = "".join(fail_messages)
+
+    # Conflicting config values should not be resolved
+    if failure_message:
+        module.fail_json(msg=failure_message, **result)
 
     repo_dict = dict()
+    if module.params['name']:
+        repo_dict['key'] = module.params['name']
     if module.params['rclass']:
         repo_dict['rclass'] = module.params['rclass']
     if module.params['packageType']:
         repo_dict['packageType'] = module.params['packageType']
     if module.params['url']:
         repo_dict['url'] = module.params['url']
+    if module.params['repoLayoutRef']:
+        repo_dict['repoLayoutRef'] = module.params['repoLayoutRef']
     if repo_config:
         repo_dict.update(repo_config)
     if repo_config_dict:
@@ -619,7 +529,7 @@ def run_module():
                                   "within artifactory '%s'"
                                   % (state, repository, artifactory_url))
 
-    artifactory_repo = ArtifactoryRepositoryManagement(
+    artifactory_repo = ArtifactoryRepoManagement(
         artifactory_url=artifactory_url,
         repo=repository,
         repo_position=repo_position,
@@ -630,12 +540,12 @@ def run_module():
         validate_certs=validate_certs,
         client_cert=client_cert,
         client_key=client_key,
-        force_basic_auth=force_basic_auth)
+        force_basic_auth=force_basic_auth,
+        config_map=URI_CONFIG_MAP)
 
-    all_repos = None
     repository_exists = False
     try:
-        all_repos = artifactory_repo.get_repository_config()
+        artifactory_repo.get_repository_config()
         repository_exists = True
     except urllib_error.HTTPError as http_e:
         if http_e.getcode() == 400:
@@ -647,36 +557,29 @@ def run_module():
         else:
             message = ("HTTP response code was '%s'. Response message was"
                        " '%s'. " % (http_e.getcode(), http_e.read()))
-            val_fail_messages.append(message)
+            fail_messages.append(message)
     except urllib_error.URLError as url_e:
         message = ("A generic URLError was thrown. URLError: %s" % str(url_e))
-        val_fail_messages.append(message)
-    except SyntaxError as s_e:
-        message = ("%s. Response from artifactory was malformed: '%s' . "
-                   % (str(s_e), all_repos))
-        val_fail_messages.append(message)
-    except ValueError as v_e:
-        message = ("%s. Response from artifactory was malformed: '%s' . "
-                   % (str(v_e), all_repos))
-        val_fail_messages.append(message)
+        fail_messages.append(message)
 
     try:
         # Now that configs are lined up, verify required values in configs
         if state == 'present':
+            artifactory_repo.validate_config_values(artifactory_url,
+                                                    repo_dict)
             if not repository_exists:
-                artifactory_repo.validate_config_required_values()
-            else:
-                artifactory_repo.validate_config_values()
-    except ConfigValueTypeMismatch as cvtm:
-        val_fail_messages.append(cvtm.message + ". ")
-    except InvalidConfigurationData as icd:
-        val_fail_messages.append(icd.message + ". ")
+                artifactory_repo.validate_config_required_keys(artifactory_url,
+                                                               repo_dict)
+    except art_base.ConfigValueTypeMismatch as cvtm:
+        fail_messages.append(cvtm.message + ". ")
+    except art_base.InvalidConfigurationData as icd:
+        fail_messages.append(icd.message + ". ")
+    except art_base.InvalidArtifactoryURL as iau:
+        fail_messages.append(iau.message + ". ")
 
     # Populate failure messages
-    failure_message = "".join(val_fail_messages)
+    failure_message = "".join(fail_messages)
 
-    # Fail fast here, conflicting config values or invalid urls should not
-    # be resolved.
     if failure_message:
         module.fail_json(msg=failure_message, **result)
 
@@ -688,33 +591,16 @@ def run_module():
     resp_is_invalid_failure = ("An unknown error occurred while attempting to "
                                "'%s' repo '%s'. Response should "
                                "not be None.")
-    if state == 'list':
-        result['message'] = ("List of all repos against artifactory_url: %s"
-                             % artifactory_url)
-        try:
-            all_repos = artifactory_repo.get_repositories()
-            result['config'] = json.loads(all_repos.read())
-        except urllib_error.HTTPError as http_e:
-            message = ("HTTP response code was '%s'. Response message was"
-                       " '%s'. " % (http_e.getcode(), http_e.read()))
-            failure_message = message
-        except urllib_error.URLError as url_e:
-            message = ("A generic URLError was thrown. URLError: %s"
-                       % str(url_e))
-            failure_message = message
-        except SyntaxError as s_e:
-            message = ("%s. Response from artifactory was malformed: '%s' . "
-                       % (str(s_e), all_repos))
-            failure_message = message
-        except ValueError as v_e:
-            message = ("%s. Response from artifactory was malformed: '%s' . "
-                       % (str(v_e), all_repos))
-            failure_message = message
-    elif state == 'read':
-        if not repository_exists:
-            result['message'] = repo_not_exists_msg
-        else:
-            try:
+    try:
+        if state == 'list':
+            result['message'] = ("List of all repos against "
+                                 "artifactory_url: %s" % artifactory_url)
+            resp = artifactory_repo.get_repositories()
+            result['config'] = json.loads(resp.read())
+        elif state == 'read':
+            if not repository_exists:
+                result['message'] = repo_not_exists_msg
+            else:
                 resp = artifactory_repo.get_repository_config()
                 if resp:
                     result['message'] = ("Successfully read config "
@@ -724,14 +610,11 @@ def run_module():
                 else:
                     failure_message = (resp_is_invalid_failure
                                        % (state, repository))
-            except urllib_error.HTTPError as e:
-                failure_message = e.read()
-    elif state == 'present':
-        # If the repo doesn't exist, create it.
-        # If the repo does exist, perform an update on it ONLY if
-        # configuration supplied has values that don't match the remote
-        # config.
-        try:
+        elif state == 'present':
+            # If the repo doesn't exist, create it.
+            # If the repo does exist, perform an update on it ONLY if
+            # configuration supplied has values that don't match the remote
+            # config.
             if not repository_exists:
                 result['message'] = ('Attempting to create repo: %s'
                                      % repository)
@@ -769,17 +652,10 @@ def run_module():
             # Attach the repository config to result
             current_config = artifactory_repo.get_repository_config()
             result['config'] = json.loads(current_config.read())
-        except urllib_error.HTTPError as http_e:
-            failure_message = http_e.read()
-        except ConfigValueTypeMismatch as cvtm:
-            failure_message = cvtm.message
-        except InvalidConfigurationData as icd:
-            failure_message = icd.message
-    elif state == 'absent':
-        if not repository_exists:
-            result['message'] = repo_not_exists_msg
-        else:
-            try:
+        elif state == 'absent':
+            if not repository_exists:
+                result['message'] = repo_not_exists_msg
+            else:
                 # save config for output on successful delete so it can be
                 # used later in play if recreating repositories
                 current_config = artifactory_repo.get_repository_config()
@@ -792,10 +668,26 @@ def run_module():
                 else:
                     failure_message = (resp_is_invalid_failure
                                        % (state, repository))
-            except urllib_error.HTTPError as e:
-                result['message'] = ("Failed to delete repo '%s' due to "
-                                     "an exception." % repository)
-                failure_message = http_e.read()
+    except urllib_error.HTTPError as http_e:
+        message = ("HTTP response code was '%s'. Response message was"
+                   " '%s'. " % (http_e.getcode(), http_e.read()))
+        failure_message = message
+    except urllib_error.URLError as url_e:
+        message = ("A generic URLError was thrown. URLError: %s"
+                   % str(url_e))
+        failure_message = message
+    except SyntaxError as s_e:
+        message = ("%s. Response from artifactory was malformed: '%s' . "
+                   % (str(s_e), resp))
+        failure_message = message
+    except ValueError as v_e:
+        message = ("%s. Response from artifactory was malformed: '%s' . "
+                   % (str(v_e), resp))
+        failure_message = message
+    except art_base.ConfigValueTypeMismatch as cvtm:
+        failure_message = cvtm.message
+    except art_base.InvalidConfigurationData as icd:
+        failure_message = icd.message
 
     if failure_message:
         module.fail_json(msg=failure_message, **result)
