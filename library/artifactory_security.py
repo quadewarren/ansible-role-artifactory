@@ -274,6 +274,9 @@ class ArtifactorySecurity(art_base.ArtifactoryBase):
         return self.query_artifactory(create_target_url, method,
                                       data=serial_config_data)
 
+    def replace_target(self):
+        return self.create_target()
+
     def update_target_config(self):
         method = 'POST'
         serial_config_data = self.get_valid_conf(method)
@@ -507,7 +510,13 @@ def run_module():
                 for key in current_config:
                     if key in desired_config:
                         if desired_config[key] != current_config[key]:
-                            resp = art_sec.update_target_config()
+                            if 'permissions' in artifactory_url:
+                                # For certain Artifactory API interactions
+                                # Replace via PUT is required instead of
+                                # Update via POST
+                                resp = art_sec.replace_target()
+                            else:
+                                resp = art_sec.update_target_config()
                 if resp:
                     result['message'] = ("Successfully updated config "
                                          "on target '%s'." % name)
