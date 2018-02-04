@@ -25,14 +25,14 @@ ANSIBLE_METADATA = {
 
 DOCUMENTATION = '''
 ---
-module: artifactory_security
+module: artifactory_user
 
-short_description: Provides management operations for security operations in JFrog Artifactory
+short_description: Provides management operations for user operations in JFrog Artifactory
 
 version_added: "2.5"
 
 description:
-    - Provides basic management operations against security operations in JFrog
+    - Provides basic management operations against user operations in JFrog
       Artifactory 5+. Please reference this configuration spec for the creation
       of users, groups, or permission targets.
       U(https://www.jfrog.com/confluence/display/RTF/Security+Configuration+JSON)
@@ -41,19 +41,16 @@ options:
     artifactory_url:
         description:
             - The target URL for managing artifactory. For certain operations,
-              you can include the group name appended to the end of the
-              url.
+              you should include the user name appended to the end of the url.
         required: true
     name:
         description:
-            - Name of the target user/group/permission target to perform
-              CRUD operations against.
+            - Name of the target user to perform CRUD operations against.
         required: true
     sec_config:
         description:
             - The string representations of the JSON used to create the target
-              security objects, whether it be a user, group, or permission
-              target. Please reference the JFrog Artifactory Security
+              security objects. Please reference the JFrog Artifactory Security
               Configuration JSON for directions on what key/values to use.
     username:
         description:
@@ -94,16 +91,16 @@ options:
         default: false
     state:
         description:
-            - The state the target (permission target/group/user) should be in.
+            - The state the user target should be in.
               'present' ensures that the target exists, but is not replaced.
               The configuration supplied will overwrite the configuration that
               exists. 'absent' ensures that the the target is deleted.
               'read' will return the configuration if the target exists.
               'list' will return a list of all targets against the specified
               url that currently exist in the target artifactory. If you wish
-              to, for instance, append a list of repositories that a permission
-              target has access to, you will need to construct the complete
-              list outside of the module and pass it in.
+              to, for instance, append a list of groups that a user is in
+              you will need to construct the complete list outside of the module
+              and pass it in.
         choices:
           - present
           - absent
@@ -113,10 +110,9 @@ options:
     sec_config_dict:
         description:
             - A dictionary in yaml format of valid configuration values against
-              a permission target, group, or user. These
-              dictionary values must match any other values passed in, such as
-              those within top-level parameters or within the configuration
-              string in sec_config.
+              a user. These dictionary values must match any other values passed
+              in, such as ethose within top-level parameters or within the
+              configuration string in sec_config.
     password:
         description:
             - The password used for creating a new user within Artifactory. It
@@ -124,11 +120,6 @@ options:
     email:
         description:
             - The email used for creating a new user within Artifactory.
-    repositories:
-        description:
-            - The list of repositories associated with a permission target,
-              which represents the list of repositories that permission target,
-              can access.
 
 author:
     - Kyle Haley (@quadewarren)
@@ -137,7 +128,7 @@ author:
 EXAMPLES = '''
 # Create a user using top-level parameters
 - name: create a temp user
-  artifactory_security:
+  artifactory_user:
     artifactory_url: http://artifactory.url.com/artifactory/api/security/users
     auth_token: MY_TOKEN
     name: temp-user
@@ -147,7 +138,7 @@ EXAMPLES = '''
 
 # Update the user config using top-level parameters
 - name: update a user config using top-level parameters
-  artifactory_security:
+  artifactory_user:
     artifactory_url: http://artifactory.url.com/artifactory/api/security/users
     auth_token: MY_TOKEN
     name: temp-user
@@ -155,36 +146,10 @@ EXAMPLES = '''
     state: present
 
 - name: delete the temp user
-  artifactory_security:
+  artifactory_user:
     artifactory_url: http://artifactory.url.com/artifactory/api/security/users
     auth_token: MY_TOKEN
     name: temp-user
-    state: absent
-
-- name: create a new group using config hash
-  artifactory_security:
-    artifactory_url: '{{ art_url_group }}'
-    auth_token: '{{ auth_token }}'
-    name: "temp-group"
-    sec_config_dict:
-      description: A group representing a collection of users. Can be LDAP.
-    state: present
-
-- name: update the group using config hash
-  artifactory_security:
-    artifactory_url: '{{ art_url_group }}'
-    auth_token: '{{ auth_token }}'
-    name: "temp-group"
-    sec_config_dict:
-      description: A group of users from LDAP. Can be LDAP.
-      realm: "Realm name (e.g. ARTIFACTORY, CROWD)"
-    state: present
-
-- name: create a temp user
-  artifactory_security:
-    artifactory_url: '{{ art_url_group }}'
-    auth_token: '{{ auth_token }}'
-    name: "temp-group"
     state: absent
 '''
 
@@ -224,15 +189,7 @@ USER_CONFIG_MAP = {
     "password":
         {"always_required": True}}
 
-PERMISSION_CONFIG_MAP = {
-    "repositories":
-        {"always_required": True}}
-
 URI_CONFIG_MAP = {"api/security/users": USER_CONFIG_MAP}
-URI_CONFIG_MAP["api/security/permissions"] = PERMISSION_CONFIG_MAP
-# There are no required values for groups, but if they are not defined
-# a validation error will be thrown.
-URI_CONFIG_MAP["api/security/groups"] = True
 
 
 def run_module():
@@ -252,7 +209,6 @@ def run_module():
         sec_config_dict=dict(type='dict', default=dict()),
         password=dict(type='str', no_log=True, default=None),
         email=dict(type='str', default=None),
-        repositories=dict(type='list', default=None),
     )
 
     result = dict(
@@ -312,12 +268,6 @@ def run_module():
                                                'sec_config',
                                                'sec_config_dict')
     fail_messages.extend(fails)
-    fails = art_base.validate_top_level_params('repositories', module,
-                                               sec_config,
-                                               sec_config_dict,
-                                               'sec_config',
-                                               'sec_config_dict')
-    fail_messages.extend(fails)
 
     # Populate failure messages
     failure_message = "".join(fail_messages)
@@ -333,15 +283,13 @@ def run_module():
         sec_dict['password'] = module.params['password']
     if module.params['email']:
         sec_dict['email'] = module.params['email']
-    if module.params['repositories']:
-        sec_dict['repositories'] = module.params['repositories']
     if sec_config:
         sec_dict.update(sec_config)
     if sec_config_dict:
         sec_dict.update(sec_config_dict)
     sec_config = json.dumps(sec_dict)
 
-    result['original_message'] = ("Perform state '%s' against group '%s' "
+    result['original_message'] = ("Perform state '%s' against user '%s' "
                                   "within artifactory '%s'"
                                   % (state, name, artifactory_url))
 
