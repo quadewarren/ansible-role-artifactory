@@ -206,6 +206,64 @@ class ArtifactoryBase(object):
         return req_keys
 
 
+class ArtifactorySecurity(art_base.ArtifactoryBase):
+    def __init__(self, artifactory_url, name=None,
+                 sec_config=None, username=None, password=None,
+                 auth_token=None, validate_certs=False, client_cert=None,
+                 client_key=None, force_basic_auth=False, config_map=None):
+        super(ArtifactorySecurity, self).__init__(
+            username=username,
+            password=password,
+            auth_token=auth_token,
+            validate_certs=validate_certs,
+            client_cert=client_cert,
+            client_key=client_key,
+            force_basic_auth=force_basic_auth,
+            config_map=config_map)
+        self.artifactory_url = artifactory_url
+        self.name = name
+        self.sec_config = sec_config
+
+        if self.name:
+            self.working_url = '%s/%s' % (self.artifactory_url, self.name)
+        else:
+            self.working_url = self.artifactory_url
+
+    def get_targets(self):
+        return self.query_artifactory(self.artifactory_url, 'GET')
+
+    def get_target_config(self):
+        return self.query_artifactory(self.working_url, 'GET')
+
+    def delete_target(self):
+        return self.query_artifactory(self.working_url, 'DELETE')
+
+    def create_target(self):
+        method = 'PUT'
+        serial_config_data = self.get_valid_conf(method)
+        create_target_url = self.working_url
+        return self.query_artifactory(create_target_url, method,
+                                      data=serial_config_data)
+
+    def replace_target(self):
+        return self.create_target()
+
+    def update_target_config(self):
+        method = 'POST'
+        serial_config_data = self.get_valid_conf(method)
+        return self.query_artifactory(self.working_url, method,
+                                      data=serial_config_data)
+
+    def get_valid_conf(self, method):
+        config_dict = self.convert_config_to_dict(self.sec_config)
+        if method == 'PUT':
+            self.validate_config_required_keys(self.artifactory_url,
+                                               config_dict)
+        self.validate_config_values(self.artifactory_url, config_dict)
+        serial_config_data = self.serialize_config_data(config_dict)
+        return serial_config_data
+
+
 class InvalidArtifactoryURL(Exception):
     pass
 

@@ -25,36 +25,49 @@ ANSIBLE_METADATA = {
 
 DOCUMENTATION = '''
 ---
-module: artifactory_security
+module: artifactory_group
 
 short_description: Provides management operations for security operations in JFrog Artifactory
 
 version_added: "2.5"
 
 description:
-    - Provides basic management operations against security operations in JFrog
+    - Provides basic management operations against security groups in JFrog
       Artifactory 5+. Please reference this configuration spec for the creation
       of users, groups, or permission targets.
       U(https://www.jfrog.com/confluence/display/RTF/Security+Configuration+JSON)
 
 options:
+    name:
+        description:
+            - Name of the target group to perform CRUD operations against.
+        required: true
+    description:
+        description:
+            - Description of the group
+    autojoin:
+        description:
+            - Whether or not a new user should automatically be joined to
+              the group upon first login.
+        type: bool
+        default: false
+    realm:
+        description:
+            - Supposedly the realm name, such as ARTIFACTORY or CROWD,
+              but when I've used this it was just 'ldap'. For this and
+              realm_attributes it would be best to manually make a user
+              in your system, then pull the api info to see what they
+              should contain.
+    realm_attributes:
+        description:
+            - Artifactory specific realm attributes for use by LDAP. See
+              realm for more information about determining what should go here.
     artifactory_url:
         description:
             - The target URL for managing artifactory. For certain operations,
               you can include the group name appended to the end of the
               url.
         required: true
-    name:
-        description:
-            - Name of the target user/group/permission target to perform
-              CRUD operations against.
-        required: true
-    sec_config:
-        description:
-            - The string representations of the JSON used to create the target
-              security objects, whether it be a user, group, or permission
-              target. Please reference the JFrog Artifactory Security
-              Configuration JSON for directions on what key/values to use.
     username:
         description:
             - username to be used in Basic Auth against Artifactory. Not
@@ -110,82 +123,31 @@ options:
           - read
           - list
         default: read
-    sec_config_dict:
-        description:
-            - A dictionary in yaml format of valid configuration values against
-              a permission target, group, or user. These
-              dictionary values must match any other values passed in, such as
-              those within top-level parameters or within the configuration
-              string in sec_config.
-    password:
-        description:
-            - The password used for creating a new user within Artifactory. It
-              will not be displayed in the log output.
-    email:
-        description:
-            - The email used for creating a new user within Artifactory.
-    repositories:
-        description:
-            - The list of repositories associated with a permission target,
-              which represents the list of repositories that permission target,
-              can access.
 
 author:
     - Kyle Haley (@quadewarren)
 '''
 
 EXAMPLES = '''
-# Create a user using top-level parameters
-- name: create a temp user
-  artifactory_security:
-    artifactory_url: http://artifactory.url.com/artifactory/api/security/users
-    auth_token: MY_TOKEN
-    name: temp-user
-    email: whatever@email.com
-    password: whatever
+- name: create a new group
+  artifactory_group:
+    artifactory_url: "{{ art_url_group }}"
+    auth_token: "{{ auth_token }}"
+    name: temp-group
+    description: A group representing a collection of users. Can be LDAP.
     state: present
 
-# Update the user config using top-level parameters
-- name: update a user config using top-level parameters
-  artifactory_security:
-    artifactory_url: http://artifactory.url.com/artifactory/api/security/users
-    auth_token: MY_TOKEN
-    name: temp-user
-    email: whatever@diffemail.com
+- name: import an LDAP group
+  artifactory_group:
+    artifactory_url: "{{ art_url_group }}"
+    auth_token: "{{ auth_token }}"
+    name: temp-group
+    description: A group of users from LDAP.
+    realm: ldap
+    realm_attribute: "ldapGroupName=temp-group;groupsStrategy=STATIC;groupDn=cn=temp-group,o=myorg"
     state: present
 
-- name: delete the temp user
-  artifactory_security:
-    artifactory_url: http://artifactory.url.com/artifactory/api/security/users
-    auth_token: MY_TOKEN
-    name: temp-user
-    state: absent
 
-- name: create a new group using config hash
-  artifactory_security:
-    artifactory_url: '{{ art_url_group }}'
-    auth_token: '{{ auth_token }}'
-    name: "temp-group"
-    sec_config_dict:
-      description: A group representing a collection of users. Can be LDAP.
-    state: present
-
-- name: update the group using config hash
-  artifactory_security:
-    artifactory_url: '{{ art_url_group }}'
-    auth_token: '{{ auth_token }}'
-    name: "temp-group"
-    sec_config_dict:
-      description: A group of users from LDAP. Can be LDAP.
-      realm: "Realm name (e.g. ARTIFACTORY, CROWD)"
-    state: present
-
-- name: create a temp user
-  artifactory_security:
-    artifactory_url: '{{ art_url_group }}'
-    auth_token: '{{ auth_token }}'
-    name: "temp-group"
-    state: absent
 '''
 
 RETURN = '''
@@ -218,29 +180,17 @@ import ansible.module_utils.six.moves.urllib.error as urllib_error
 from ansible.module_utils.basic import AnsibleModule
 
 
-USER_CONFIG_MAP = {
-    "email":
-        {"always_required": True},
-    "password":
-        {"always_required": True}}
-
-PERMISSION_CONFIG_MAP = {
-    "repositories":
-        {"always_required": True}}
-
-URI_CONFIG_MAP = {"api/security/users": USER_CONFIG_MAP}
-URI_CONFIG_MAP["api/security/permissions"] = PERMISSION_CONFIG_MAP
 # There are no required values for groups, but if they are not defined
 # a validation error will be thrown.
 URI_CONFIG_MAP["api/security/groups"] = True
 
 
-class ArtifactorySecurity(art_base.ArtifactoryBase):
-    def __init__(self, artifactory_url, name=None,
-                 sec_config=None, username=None, password=None,
-                 auth_token=None, validate_certs=False, client_cert=None,
-                 client_key=None, force_basic_auth=False, config_map=None):
-        super(ArtifactorySecurity, self).__init__(
+class ArtifactoryGroup(art_base.ArtifactorySecurity):
+    def __init__(self, artifactory_url, name=None, sec_config=None,
+                 username=None, password=None, auth_token=None,
+                 validate_certs=False, client_cert=None, client_key=None,
+                 force_basic_auth=False, config_map=None):
+        super(ArtifactoryGroup, self).__init__(
             username=username,
             password=password,
             auth_token=auth_token,
@@ -258,44 +208,15 @@ class ArtifactorySecurity(art_base.ArtifactoryBase):
         else:
             self.working_url = self.artifactory_url
 
-    def get_targets(self):
-        return self.query_artifactory(self.artifactory_url, 'GET')
-
-    def get_target_config(self):
-        return self.query_artifactory(self.working_url, 'GET')
-
-    def delete_target(self):
-        return self.query_artifactory(self.working_url, 'DELETE')
-
-    def create_target(self):
-        method = 'PUT'
-        serial_config_data = self.get_valid_conf(method)
-        create_target_url = self.working_url
-        return self.query_artifactory(create_target_url, method,
-                                      data=serial_config_data)
-
-    def update_target_config(self):
-        method = 'POST'
-        serial_config_data = self.get_valid_conf(method)
-        return self.query_artifactory(self.working_url, method,
-                                      data=serial_config_data)
-
-    def get_valid_conf(self, method):
-        config_dict = self.convert_config_to_dict(self.sec_config)
-        if method == 'PUT':
-            self.validate_config_required_keys(self.artifactory_url,
-                                               config_dict)
-        self.validate_config_values(self.artifactory_url, config_dict)
-        serial_config_data = self.serialize_config_data(config_dict)
-        return serial_config_data
-
 
 def run_module():
     state_map = ['present', 'absent', 'read', 'list']
     module_args = dict(
         artifactory_url=dict(type='str', required=True),
         name=dict(type='str', required=True),
-        sec_config=dict(type='str', default=None),
+        description=dict(type='str', default=None),
+        realm=dict(type='str', default=None),
+        realm_attribute=dict(type='str', default=None),
         username=dict(type='str', default=None),
         auth_password=dict(type='str', no_log=True, default=None),
         auth_token=dict(type='str', no_log=True, default=None),
@@ -304,10 +225,6 @@ def run_module():
         client_key=dict(type='path', default=None),
         force_basic_auth=dict(type='bool', default=False),
         state=dict(type='str', default='read', choices=state_map),
-        sec_config_dict=dict(type='dict', default=dict()),
-        password=dict(type='str', no_log=True, default=None),
-        email=dict(type='str', default=None),
-        repositories=dict(type='list', default=None),
     )
 
     result = dict(
@@ -331,7 +248,6 @@ def run_module():
 
     artifactory_url = module.params['artifactory_url']
     name = module.params['name']
-    sec_config = module.params['sec_config']
     username = module.params['username']
     auth_password = module.params['auth_password']
     auth_token = module.params['auth_token']
@@ -340,7 +256,6 @@ def run_module():
     client_key = module.params['client_key']
     force_basic_auth = module.params['force_basic_auth']
     state = module.params['state']
-    sec_config_dict = module.params['sec_config_dict']
 
     if sec_config:
         # temporarily convert to dict for validation
@@ -357,22 +272,6 @@ def run_module():
                                                'sec_config',
                                                'sec_config_dict')
     fail_messages.extend(fails)
-    fails = art_base.validate_top_level_params('password', module, sec_config,
-                                               sec_config_dict,
-                                               'sec_config',
-                                               'sec_config_dict')
-    fail_messages.extend(fails)
-    fails = art_base.validate_top_level_params('email', module, sec_config,
-                                               sec_config_dict,
-                                               'sec_config',
-                                               'sec_config_dict')
-    fail_messages.extend(fails)
-    fails = art_base.validate_top_level_params('repositories', module,
-                                               sec_config,
-                                               sec_config_dict,
-                                               'sec_config',
-                                               'sec_config_dict')
-    fail_messages.extend(fails)
 
     # Populate failure messages
     failure_message = "".join(fail_messages)
@@ -384,16 +283,12 @@ def run_module():
     sec_dict = dict()
     if module.params['name']:
         sec_dict['name'] = module.params['name']
-    if module.params['password']:
-        sec_dict['password'] = module.params['password']
-    if module.params['email']:
-        sec_dict['email'] = module.params['email']
-    if module.params['repositories']:
-        sec_dict['repositories'] = module.params['repositories']
-    if sec_config:
-        sec_dict.update(sec_config)
-    if sec_config_dict:
-        sec_dict.update(sec_config_dict)
+    if module.params['description']:
+        sec_dict['description'] = module.params['description']
+    if module.params['realm']:
+        sec_dict['realm'] = module.params['realm']
+    if module.params['realm_attributes']:
+        sec_dict['realm_attributes'] = module.params['realm_attributes']
     sec_config = json.dumps(sec_dict)
 
     result['original_message'] = ("Perform state '%s' against group '%s' "
