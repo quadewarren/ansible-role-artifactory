@@ -529,7 +529,7 @@ def run_module():
                                   "within artifactory '%s'"
                                   % (state, repository, artifactory_url))
 
-    artifactory_repo = ArtifactoryRepoManagement(
+    art_repo = ArtifactoryRepoManagement(
         artifactory_url=artifactory_url,
         repo=repository,
         repo_position=repo_position,
@@ -545,7 +545,7 @@ def run_module():
 
     repository_exists = False
     try:
-        artifactory_repo.get_repository_config()
+        art_repo.get_repository_config()
         repository_exists = True
     except urllib_error.HTTPError as http_e:
         if http_e.getcode() == 400:
@@ -565,11 +565,10 @@ def run_module():
     try:
         # Now that configs are lined up, verify required values in configs
         if state == 'present':
-            artifactory_repo.validate_config_values(artifactory_url,
-                                                    repo_dict)
+            art_repo.validate_config_values(artifactory_url, repo_dict)
             if not repository_exists:
-                artifactory_repo.validate_config_required_keys(artifactory_url,
-                                                               repo_dict)
+                art_repo.validate_config_required_keys(artifactory_url,
+                                                       repo_dict)
     except art_base.ConfigValueTypeMismatch as cvtm:
         fail_messages.append(cvtm.message + ". ")
     except art_base.InvalidConfigurationData as icd:
@@ -591,17 +590,18 @@ def run_module():
     resp_is_invalid_failure = ("An unknown error occurred while attempting to "
                                "'%s' repo '%s'. Response should "
                                "not be None.")
+    resp = None
     try:
         if state == 'list':
             result['message'] = ("List of all repos against "
                                  "artifactory_url: %s" % artifactory_url)
-            resp = artifactory_repo.get_repositories()
+            resp = art_repo.get_repositories()
             result['config'] = json.loads(resp.read())
         elif state == 'read':
             if not repository_exists:
                 result['message'] = repo_not_exists_msg
             else:
-                resp = artifactory_repo.get_repository_config()
+                resp = art_repo.get_repository_config()
                 if resp:
                     result['message'] = ("Successfully read config "
                                          "on repo '%s'." % repository)
@@ -618,7 +618,7 @@ def run_module():
             if not repository_exists:
                 result['message'] = ('Attempting to create repo: %s'
                                      % repository)
-                resp = artifactory_repo.create_repository()
+                resp = art_repo.create_repository()
                 if resp:
                     result['message'] = resp.read()
                     result['changed'] = True
@@ -628,20 +628,19 @@ def run_module():
             else:
                 result['message'] = ('Attempting to update repo: %s'
                                      % repository)
-                current_config = artifactory_repo.get_repository_config()
+                current_config = art_repo.get_repository_config()
                 current_config = json.loads(current_config.read())
                 desired_config = ast.literal_eval(repo_config)
                 # Compare desired config with current config against repo.
                 # If config values are identical, don't update.
                 resp = None
-                for key in current_config:
-                    if key in desired_config:
-                        if desired_config[key] != current_config[key]:
-                            resp = artifactory_repo.update_repository_config()
-                # To guarantee idempotence. If underlying libraries don't
-                # throw an exception, it could incorrectly report a success
-                # when there was actually a failure.
-                if resp:
+                config_identical = art_repo.compare_config(current_config,
+                                                           desired_config)
+                if not config_identical:
+                    resp = art_repo.update_repository_config()
+                    # To guarantee idempotence. If underlying libraries don't
+                    # throw an exception, it could incorrectly report a success
+                    # when there was actually a failure.
                     result['message'] = ("Successfully updated config "
                                          "on repo '%s'." % repository)
                     result['changed'] = True
@@ -650,7 +649,7 @@ def run_module():
                     result['message'] = ("Repo '%s' was not updated because "
                                          "config was identical." % repository)
             # Attach the repository config to result
-            current_config = artifactory_repo.get_repository_config()
+            current_config = art_repo.get_repository_config()
             result['config'] = json.loads(current_config.read())
         elif state == 'absent':
             if not repository_exists:
@@ -658,8 +657,8 @@ def run_module():
             else:
                 # save config for output on successful delete so it can be
                 # used later in play if recreating repositories
-                current_config = artifactory_repo.get_repository_config()
-                resp = artifactory_repo.delete_repository()
+                current_config = art_repo.get_repository_config()
+                resp = art_repo.delete_repository()
                 if resp:
                     result['message'] = ("Successfully deleted repo '%s'."
                                          % repository)
