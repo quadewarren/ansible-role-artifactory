@@ -462,6 +462,7 @@ def run_module():
     resp_is_invalid_failure = ("An unknown error occurred while attempting to "
                                "'%s' target '%s'. Response should "
                                "not be None.")
+    resp = None
     try:
         if state == 'list':
             result['message'] = ("List of all targets against "
@@ -503,20 +504,22 @@ def run_module():
                 current_config = art_sec.get_target_config()
                 current_config = json.loads(current_config.read())
                 desired_config = ast.literal_eval(sec_config)
+                result['current_config'] = json.dumps(current_config)
+                result['desired_config'] = json.dumps(desired_config)
                 # Compare desired config with current config against target.
                 # If config values are identical, don't update.
                 resp = None
-                for key in current_config:
-                    if key in desired_config:
-                        if desired_config[key] != current_config[key]:
-                            if 'permissions' in artifactory_url:
-                                # For certain Artifactory API interactions
-                                # Replace via PUT is required instead of
-                                # Update via POST
-                                resp = art_sec.replace_target()
-                            else:
-                                resp = art_sec.update_target_config()
-                if resp:
+                config_identical = art_sec.compare_config(current_config,
+                                                          desired_config)
+                if not config_identical:
+                    if 'permissions' in artifactory_url:
+                        # For certain Artifactory API interactions
+                        # Replace via PUT is required instead of
+                        # Update via POST
+                        resp = art_sec.replace_target()
+                    else:
+                        resp = art_sec.update_target_config()
+
                     result['message'] = ("Successfully updated config "
                                          "on target '%s'." % name)
                     result['changed'] = True

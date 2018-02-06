@@ -205,6 +205,23 @@ class ArtifactoryBase(object):
                                 " list." % config_value)
         return req_keys
 
+    def compare_config(self, current, desired):
+        def order_dict_sort_list(dictionary):
+            result = {}
+            for k, v in sorted(dictionary.items()):
+                if isinstance(v, dict):
+                    result[k] = order_dict_sort_list(v)
+                elif isinstance(v, list):
+                    result[k] = sorted(v)
+                else:
+                    result[k] = v
+            return result
+
+        s_current = order_dict_sort_list(current)
+        s_desired = order_dict_sort_list(desired)
+        return all(s_current[k] == s_desired[k]
+                   for k in s_desired if k in s_current)
+
 
 class InvalidArtifactoryURL(Exception):
     pass
