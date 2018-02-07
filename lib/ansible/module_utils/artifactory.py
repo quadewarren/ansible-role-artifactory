@@ -26,6 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+import ansible.module_utils.six.moves.urllib.error as urllib_error
 import ast
 import json
 
@@ -53,9 +54,10 @@ URI_CONFIG_MAP = {
 
 
 class ArtifactoryBase(object):
-    def __init__(self, username=None, password=None,
+    def __init__(self, username=None, password=None, artifactory_url=None,
                  auth_token=None, validate_certs=False, client_cert=None,
-                 client_key=None, force_basic_auth=False, config_map=None):
+                 client_key=None, force_basic_auth=False, config_map=None,
+                 name=None, art_config=None):
         self.username = username
         self.password = password
         self.auth_token = auth_token
@@ -65,11 +67,50 @@ class ArtifactoryBase(object):
         self.client_key = client_key
         self.force_basic_auth = force_basic_auth
 
+        self.artifactory_url = artifactory_url
+        self.name = name
         self.config_map = config_map
+        self.art_config = art_config
 
         self.headers = {"Content-Type": "application/json"}
         if auth_token:
             self.headers["X-JFrog-Art-Api"] = auth_token
+
+        if self.name:
+            self.working_url = '%s/%s' % (self.artifactory_url, self.name)
+        else:
+            self.working_url = self.artifactory_url
+
+    def get_artifactory_targets(self):
+        return self.query_artifactory(self.artifactory_url, 'GET')
+
+    def get_artifactory_target(self):
+        return self.query_artifactory(self.working_url, 'GET')
+
+    def delete_artifactory_target(self):
+        return self.query_artifactory(self.working_url, 'DELETE')
+
+    def create_artifactory_target(self):
+        method = 'PUT'
+        serial_config_data = self.get_valid_conf(method)
+        create_target_url = self.working_url
+        return self.query_artifactory(create_target_url, method,
+                                      data=serial_config_data)
+
+    def update_artifactory_target(self):
+        method = 'POST'
+        serial_config_data = self.get_valid_conf(method)
+        return self.query_artifactory(self.working_url, method,
+                                      data=serial_config_data)
+
+    def get_valid_conf(self, method):
+        config_dict = self.convert_config_to_dict(self.art_config)
+        if method == 'PUT':
+            self.validate_config_required_keys(self.artifactory_url,
+                                               config_dict)
+        self.validate_config_values(self.artifactory_url, config_dict)
+        serial_config_data = self.serialize_config_data(config_dict)
+        return serial_config_data
 
     def convert_config_to_dict(self, config):
         if isinstance(config, dict):
@@ -163,7 +204,7 @@ class ArtifactoryBase(object):
         return req_keys
 
     def get_always_required_keys(self, url, config_dict):
-        """Return keys that are always required for creating a repo."""
+        """Return keys that are always required for creating a target."""
         validation_dict = self.get_uri_key_map(url, self.config_map)
         req_keys = list()
         # If the resulting validation dict is boolean True, then this just
@@ -204,6 +245,24 @@ class ArtifactoryBase(object):
                                 " ['values_require_keys']['%s'] is not a"
                                 " list." % config_value)
         return req_keys
+
+    def compare_config(self, current, desired, ignore_keys=list()):
+        def order_dict_sort_list(dictionary):
+            result = {}
+            for k, v in sorted(dictionary.items()):
+                if isinstance(v, dict):
+                    result[k] = order_dict_sort_list(v)
+                elif isinstance(v, list):
+                    result[k] = sorted(v)
+                else:
+                    result[k] = v
+            return result
+
+        s_current = order_dict_sort_list(current)
+        s_desired = order_dict_sort_list(desired)
+        return all(s_current[k] == s_desired[k]
+                   for k in s_desired if k in s_current and
+                   k not in ignore_keys)
 
 
 class InvalidArtifactoryURL(Exception):
@@ -285,3 +344,166 @@ def validate_config_params(config, config_hash, config_name, config_hash_name):
                                                     config_hash_name)
                 validation_fail_messages.append(fail_msg)
     return validation_fail_messages
+
+
+def run_module(module, art_obj, message_noun, result, fail_messages,
+               art_dict, ignore_keys=list()):
+    state = module.params['state']
+    artifactory_url = module.params['artifactory_url']
+    target_name = module.params['name']
+    art_config_str = art_obj.art_config
+    art_target_exists = False
+    try:
+        art_obj.get_artifactory_target()
+        art_target_exists = True
+    except urllib_error.HTTPError as http_e:
+        if http_e.getcode() == 400 and 'api/repositories' in artifactory_url:
+            # Instead of throwing a 404, a 400 is thrown if a repo doesn't
+            # exist. Have to fall through and assume the repo doesn't exist
+            # and that another error did not occur. If there is another problem
+            # it will have to be caught by try/catch blocks further below.
+            pass
+        elif (http_e.getcode() == 404 and
+                ('api/security/groups' in artifactory_url or
+                 'api/security/users' in artifactory_url or
+                 'api/security/permissions' in artifactory_url)):
+            # If 404, the target is just not found. Continue on.
+            pass
+        else:
+            message = ("HTTP response code was '%s'. Response message was"
+                       " '%s'. " % (http_e.getcode(), http_e.read()))
+            fail_messages.append(message)
+    except urllib_error.URLError as url_e:
+        message = ("A generic URLError was thrown. URLError: %s" % str(url_e))
+        fail_messages.append(message)
+
+    try:
+        # Now that configs are lined up, verify required values in configs
+        if state == 'present':
+            art_obj.validate_config_values(artifactory_url, art_dict)
+            if not art_target_exists:
+                art_obj.validate_config_required_keys(artifactory_url,
+                                                      art_dict)
+    except ConfigValueTypeMismatch as cvtm:
+        fail_messages.append(cvtm.message + ". ")
+    except InvalidConfigurationData as icd:
+        fail_messages.append(icd.message + ". ")
+    except InvalidArtifactoryURL as iau:
+        fail_messages.append(iau.message + ". ")
+
+    # Populate failure messages
+    failure_message = "".join(fail_messages)
+
+    if failure_message:
+        module.fail_json(msg=failure_message, **result)
+
+    if module.check_mode:
+        result['message'] = 'check_mode success'
+        module.exit_json(**result)
+
+    art_targ_not_exists_msg = ("%s '%s' does not exist."
+                               % (message_noun, target_name))
+    resp_is_invalid_failure = ("An unknown error occurred while attempting to "
+                               "'%s' %s '%s'. Response should "
+                               "not be None.")
+    resp = None
+    try:
+        if state == 'list':
+            result['message'] = ("List of all artifactory targets against "
+                                 "artifactory_url: %s" % artifactory_url)
+            resp = art_obj.get_artifactory_targets()
+            result['config'] = json.loads(resp.read())
+        elif state == 'read':
+            if not art_target_exists:
+                result['message'] = art_targ_not_exists_msg
+            else:
+                resp = art_obj.get_artifactory_target()
+                if resp:
+                    result['message'] = ("Successfully read config "
+                                         "on %s '%s'."
+                                         % (message_noun, target_name))
+                    result['config'] = json.loads(resp.read())
+                    result['changed'] = True
+                else:
+                    failure_message = (resp_is_invalid_failure
+                                       % (state, message_noun, target_name))
+        elif state == 'present':
+            # If the target doesn't exist, create it.
+            # If the target does exist, perform an update on it ONLY if
+            # configuration supplied has values that don't match the remote
+            # config.
+            if not art_target_exists:
+                result['message'] = ('Attempting to create %s: %s'
+                                     % (message_noun, target_name))
+                resp = art_obj.create_artifactory_target()
+                if resp:
+                    result['message'] = resp.read()
+                    result['changed'] = True
+                else:
+                    failure_message = (resp_is_invalid_failure
+                                       % (state, message_noun, target_name))
+            else:
+                result['message'] = ('Attempting to update %s: %s'
+                                     % (message_noun, target_name))
+                current_config = art_obj.get_artifactory_target()
+                current_config = json.loads(current_config.read())
+                desired_config = ast.literal_eval(art_config_str)
+                # Compare desired config with current config against target.
+                # If config values are identical, don't update.
+                config_identical = art_obj.compare_config(current_config,
+                                                          desired_config)
+                if not config_identical:
+                    resp = art_obj.update_artifactory_target()
+                    result['message'] = ("Successfully updated config "
+                                         "on %s '%s'."
+                                         % (message_noun, target_name))
+                    result['changed'] = True
+                else:
+                    # Config values were identical.
+                    result['message'] = ("%s '%s' was not updated because "
+                                         "config was identical."
+                                         % (message_noun, target_name))
+            # Attach the artfactory target config to result
+            current_config = art_obj.get_artifactory_target()
+            result['config'] = json.loads(current_config.read())
+        elif state == 'absent':
+            if not art_target_exists:
+                result['message'] = art_targ_not_exists_msg
+            else:
+                # save config for output on successful delete so it can be
+                # used later in play if recreating targets
+                current_config = art_obj.get_artifactory_target()
+                resp = art_obj.delete_artifactory_target()
+                if resp:
+                    result['message'] = ("Successfully deleted %s '%s'."
+                                         % (message_noun, target_name))
+                    result['changed'] = True
+                    result['config'] = json.loads(current_config.read())
+                else:
+                    failure_message = (resp_is_invalid_failure
+                                       % (state, message_noun, target_name))
+    except urllib_error.HTTPError as http_e:
+        message = ("HTTP response code was '%s'. Response message was"
+                   " '%s'. " % (http_e.getcode(), http_e.read()))
+        failure_message = message
+    except urllib_error.URLError as url_e:
+        message = ("A generic URLError was thrown. URLError: %s"
+                   % str(url_e))
+        failure_message = message
+    except SyntaxError as s_e:
+        message = ("%s. Response from artifactory was malformed: '%s' . "
+                   % (str(s_e), resp))
+        failure_message = message
+    except ValueError as v_e:
+        message = ("%s. Response from artifactory was malformed: '%s' . "
+                   % (str(v_e), resp))
+        failure_message = message
+    except ConfigValueTypeMismatch as cvtm:
+        failure_message = cvtm.message
+    except InvalidConfigurationData as icd:
+        failure_message = icd.message
+
+    if failure_message:
+        module.fail_json(msg=failure_message, **result)
+
+    module.exit_json(**result)

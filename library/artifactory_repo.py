@@ -307,7 +307,6 @@ import ast
 import json
 
 import ansible.module_utils.artifactory as art_base
-import ansible.module_utils.six.moves.urllib.error as urllib_error
 
 from ansible.module_utils.basic import AnsibleModule
 
@@ -364,27 +363,13 @@ class ArtifactoryRepoManagement(art_base.ArtifactoryBase):
             client_cert=client_cert,
             client_key=client_key,
             force_basic_auth=force_basic_auth,
-            config_map=config_map)
-        self.artifactory_url = artifactory_url
-        self.repo = repo
+            config_map=config_map,
+            artifactory_url=artifactory_url,
+            name=repo,
+            art_config=repo_config)
         self.repo_position = repo_position
-        self.repo_config = repo_config
 
-        if self.repo:
-            self.working_url = '%s/%s' % (self.artifactory_url, self.repo)
-        else:
-            self.working_url = self.artifactory_url
-
-    def get_repositories(self):
-        return self.query_artifactory(self.artifactory_url, 'GET')
-
-    def get_repository_config(self):
-        return self.query_artifactory(self.working_url, 'GET')
-
-    def delete_repository(self):
-        return self.query_artifactory(self.working_url, 'DELETE')
-
-    def create_repository(self):
+    def create_artifactory_target(self):
         method = 'PUT'
         serial_config_data = self.get_valid_conf(method)
         create_repo_url = self.working_url
@@ -398,23 +383,8 @@ class ArtifactoryRepoManagement(art_base.ArtifactoryBase):
         return self.query_artifactory(create_repo_url, method,
                                       data=serial_config_data)
 
-    def update_repository_config(self):
-        method = 'POST'
-        serial_config_data = self.get_valid_conf(method)
-        return self.query_artifactory(self.working_url, method,
-                                      data=serial_config_data)
 
-    def get_valid_conf(self, method):
-        config_dict = self.convert_config_to_dict(self.repo_config)
-        if method == 'PUT':
-            self.validate_config_required_keys(self.artifactory_url,
-                                               config_dict)
-        self.validate_config_values(self.artifactory_url, config_dict)
-        serial_config_data = self.serialize_config_data(config_dict)
-        return serial_config_data
-
-
-def run_module():
+def main():
     state_map = ['present', 'absent', 'read', 'list']
     rclass_state_map = VALID_RCLASSES
     packageType_state_map = VALID_PACKAGETYPES
@@ -453,7 +423,6 @@ def run_module():
         mutually_exclusive=[['password', 'auth_token']],
         required_if=[['state', 'present', ['artifactory_url', 'name']],
                      ['state', 'absent', ['artifactory_url', 'name']],
-                     ['state', 'list', ['artifactory_url', 'name']],
                      ['state', 'read', ['artifactory_url', 'name']]],
         supports_check_mode=True,
     )
@@ -529,7 +498,7 @@ def run_module():
                                   "within artifactory '%s'"
                                   % (state, repository, artifactory_url))
 
-    artifactory_repo = ArtifactoryRepoManagement(
+    art_repo = ArtifactoryRepoManagement(
         artifactory_url=artifactory_url,
         repo=repository,
         repo_position=repo_position,
@@ -543,160 +512,8 @@ def run_module():
         force_basic_auth=force_basic_auth,
         config_map=URI_CONFIG_MAP)
 
-    repository_exists = False
-    try:
-        artifactory_repo.get_repository_config()
-        repository_exists = True
-    except urllib_error.HTTPError as http_e:
-        if http_e.getcode() == 400:
-            # Instead of throwing a 404, a 400 is thrown if a repo doesn't
-            # exist. Have to fall through and assume the repo doesn't exist
-            # and that another error did not occur. If there is another problem
-            # it will have to be caught by try/catch blocks further below.
-            pass
-        else:
-            message = ("HTTP response code was '%s'. Response message was"
-                       " '%s'. " % (http_e.getcode(), http_e.read()))
-            fail_messages.append(message)
-    except urllib_error.URLError as url_e:
-        message = ("A generic URLError was thrown. URLError: %s" % str(url_e))
-        fail_messages.append(message)
-
-    try:
-        # Now that configs are lined up, verify required values in configs
-        if state == 'present':
-            artifactory_repo.validate_config_values(artifactory_url,
-                                                    repo_dict)
-            if not repository_exists:
-                artifactory_repo.validate_config_required_keys(artifactory_url,
-                                                               repo_dict)
-    except art_base.ConfigValueTypeMismatch as cvtm:
-        fail_messages.append(cvtm.message + ". ")
-    except art_base.InvalidConfigurationData as icd:
-        fail_messages.append(icd.message + ". ")
-    except art_base.InvalidArtifactoryURL as iau:
-        fail_messages.append(iau.message + ". ")
-
-    # Populate failure messages
-    failure_message = "".join(fail_messages)
-
-    if failure_message:
-        module.fail_json(msg=failure_message, **result)
-
-    if module.check_mode:
-        result['message'] = 'check_mode success'
-        module.exit_json(**result)
-
-    repo_not_exists_msg = ("Repository '%s' does not exist." % repository)
-    resp_is_invalid_failure = ("An unknown error occurred while attempting to "
-                               "'%s' repo '%s'. Response should "
-                               "not be None.")
-    try:
-        if state == 'list':
-            result['message'] = ("List of all repos against "
-                                 "artifactory_url: %s" % artifactory_url)
-            resp = artifactory_repo.get_repositories()
-            result['config'] = json.loads(resp.read())
-        elif state == 'read':
-            if not repository_exists:
-                result['message'] = repo_not_exists_msg
-            else:
-                resp = artifactory_repo.get_repository_config()
-                if resp:
-                    result['message'] = ("Successfully read config "
-                                         "on repo '%s'." % repository)
-                    result['config'] = json.loads(resp.read())
-                    result['changed'] = True
-                else:
-                    failure_message = (resp_is_invalid_failure
-                                       % (state, repository))
-        elif state == 'present':
-            # If the repo doesn't exist, create it.
-            # If the repo does exist, perform an update on it ONLY if
-            # configuration supplied has values that don't match the remote
-            # config.
-            if not repository_exists:
-                result['message'] = ('Attempting to create repo: %s'
-                                     % repository)
-                resp = artifactory_repo.create_repository()
-                if resp:
-                    result['message'] = resp.read()
-                    result['changed'] = True
-                else:
-                    failure_message = (resp_is_invalid_failure
-                                       % (state, repository))
-            else:
-                result['message'] = ('Attempting to update repo: %s'
-                                     % repository)
-                current_config = artifactory_repo.get_repository_config()
-                current_config = json.loads(current_config.read())
-                desired_config = ast.literal_eval(repo_config)
-                # Compare desired config with current config against repo.
-                # If config values are identical, don't update.
-                resp = None
-                for key in current_config:
-                    if key in desired_config:
-                        if desired_config[key] != current_config[key]:
-                            resp = artifactory_repo.update_repository_config()
-                # To guarantee idempotence. If underlying libraries don't
-                # throw an exception, it could incorrectly report a success
-                # when there was actually a failure.
-                if resp:
-                    result['message'] = ("Successfully updated config "
-                                         "on repo '%s'." % repository)
-                    result['changed'] = True
-                else:
-                    # Config values were identical.
-                    result['message'] = ("Repo '%s' was not updated because "
-                                         "config was identical." % repository)
-            # Attach the repository config to result
-            current_config = artifactory_repo.get_repository_config()
-            result['config'] = json.loads(current_config.read())
-        elif state == 'absent':
-            if not repository_exists:
-                result['message'] = repo_not_exists_msg
-            else:
-                # save config for output on successful delete so it can be
-                # used later in play if recreating repositories
-                current_config = artifactory_repo.get_repository_config()
-                resp = artifactory_repo.delete_repository()
-                if resp:
-                    result['message'] = ("Successfully deleted repo '%s'."
-                                         % repository)
-                    result['changed'] = True
-                    result['config'] = json.loads(current_config.read())
-                else:
-                    failure_message = (resp_is_invalid_failure
-                                       % (state, repository))
-    except urllib_error.HTTPError as http_e:
-        message = ("HTTP response code was '%s'. Response message was"
-                   " '%s'. " % (http_e.getcode(), http_e.read()))
-        failure_message = message
-    except urllib_error.URLError as url_e:
-        message = ("A generic URLError was thrown. URLError: %s"
-                   % str(url_e))
-        failure_message = message
-    except SyntaxError as s_e:
-        message = ("%s. Response from artifactory was malformed: '%s' . "
-                   % (str(s_e), resp))
-        failure_message = message
-    except ValueError as v_e:
-        message = ("%s. Response from artifactory was malformed: '%s' . "
-                   % (str(v_e), resp))
-        failure_message = message
-    except art_base.ConfigValueTypeMismatch as cvtm:
-        failure_message = cvtm.message
-    except art_base.InvalidConfigurationData as icd:
-        failure_message = icd.message
-
-    if failure_message:
-        module.fail_json(msg=failure_message, **result)
-
-    module.exit_json(**result)
-
-
-def main():
-    run_module()
+    art_base.run_module(module, art_repo, "groups", result,
+                        fail_messages, repo_config)
 
 
 if __name__ == "__main__":
