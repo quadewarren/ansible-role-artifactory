@@ -336,7 +336,7 @@ def main():
         sec_dict.update(replication_config)
     if replication_config_dict:
         sec_dict.update(replication_config_dict)
-    replication_config = json.dumps(sec_dict)
+    replication_config = str(sec_dict)
 
     result['original_message'] = ("Perform state '%s' against target '%s' "
                                   "within artifactory '%s'"

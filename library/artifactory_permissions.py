@@ -139,6 +139,21 @@ EXAMPLES = '''
        - two-repo
     state: present
 
+# Create a permission target using top-level parameters and using
+# perm_config_dict to set group permissions.
+- name: create a permission target
+  artifactory_permissions:
+    artifactory_url: http://art.url.com/artifactory/api/security/permissions
+    auth_token: MY_TOKEN
+    name: temp-perm
+    repositories:
+       - one-repo
+       - two-repo
+    perm_config_dict:
+       principals:
+          groups: '{"the_group": ["w", "r"]}'
+    state: present
+
 # Replace the artifactory permission target with the latest version
 - name: Replace the permission target with latest config
   artifactory_permissions:
@@ -301,7 +316,7 @@ def main():
         sec_dict.update(perm_config)
     if perm_config_dict:
         sec_dict.update(perm_config_dict)
-    perm_config = json.dumps(sec_dict)
+    perm_config = str(sec_dict)
 
     result['original_message'] = ("Perform state '%s' against target '%s' "
                                   "within artifactory '%s'"

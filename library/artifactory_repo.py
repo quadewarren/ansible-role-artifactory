@@ -152,6 +152,7 @@ options:
         choices:
           - bower
           - chef
+          - cocoapods
           - composer
           - conan
           - debian
@@ -160,15 +161,17 @@ options:
           - generic
           - gitlfs
           - gradle
+          - helm
           - ivy
           - maven
           - npm
           - nuget
+          - opkg
           - puppet
           - pypi
+          - rpm
           - sbt
           - vagrant
-          - yum
     repo_config_dict:
         description:
             - A dictionary in yaml format of valid configuration values. These
@@ -319,6 +322,7 @@ VALID_RCLASSES = [LOCAL_RCLASS, REMOTE_RCLASS, VIRTUAL_RCLASS]
 
 VALID_PACKAGETYPES = ["bower",
                       "chef",
+                      "cocoapads",
                       "composer",
                       "conan",
                       "debian",
@@ -327,15 +331,17 @@ VALID_PACKAGETYPES = ["bower",
                       "generic",
                       "gitlfs",
                       "gradle",
+                      "helm",
                       "ivy",
                       "maven",
                       "npm",
                       "nuget",
+                      "opkg",
                       "puppet",
                       "pypi",
+                      "rpm",
                       "sbt",
-                      "vagrant",
-                      "yum"]
+                      "vagrant"]
 
 KEY_CONFIG_MAP = {
     "rclass":
@@ -492,7 +498,7 @@ def main():
         repo_dict.update(repo_config)
     if repo_config_dict:
         repo_dict.update(repo_config_dict)
-    repo_config = json.dumps(repo_dict)
+    repo_config = str(repo_dict)
 
     result['original_message'] = ("Perform state '%s' against repo '%s' "
                                   "within artifactory '%s'"
@@ -512,7 +518,7 @@ def main():
         force_basic_auth=force_basic_auth,
         config_map=URI_CONFIG_MAP)
 
-    art_base.run_module(module, art_repo, "groups", result,
+    art_base.run_module(module, art_repo, "repos", result,
                         fail_messages, repo_config)
 
 
