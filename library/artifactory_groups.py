@@ -261,7 +261,7 @@ def main():
         sec_dict.update(group_config)
     if group_config_dict:
         sec_dict.update(group_config_dict)
-    group_config = json.dumps(sec_dict)
+    group_config = str(sec_dict)
 
     result['original_message'] = ("Perform state '%s' against target '%s' "
                                   "within artifactory '%s'"
