@@ -175,7 +175,6 @@ config:
     type: dict
 '''
 import ast
-import json
 
 import ansible.module_utils.artifactory as art_base
 

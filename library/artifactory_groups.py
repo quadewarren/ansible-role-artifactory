@@ -47,7 +47,11 @@ options:
     name:
         description:
             - Name of the artifactory security group target to perform
-              CRUD operations against.
+              CRUD operations against. WARNING: The UI will enforce lowercase
+              when importing LDAP groups, but the API side WILL not. If you are
+              creating LDAP groups via the API, you will need to make sure all
+              LDAP group names are lowercase since this will impact how
+              Artifactory matches. See Artifactory Knowledge Article: 000001563
         required: true
     group_config:
         description:
@@ -173,7 +177,6 @@ config:
 
 
 import ast
-import json
 
 import ansible.module_utils.artifactory as art_base
 
