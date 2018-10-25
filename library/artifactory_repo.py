@@ -155,11 +155,14 @@ options:
           - cocoapods
           - composer
           - conan
+          - conda
+          - cran
           - debian
           - docker
           - gems
           - generic
           - gitlfs
+          - go
           - gradle
           - helm
           - ivy
@@ -167,11 +170,13 @@ options:
           - npm
           - nuget
           - opkg
+          - p2
           - puppet
           - pypi
           - rpm
           - sbt
           - vagrant
+          - vcs
     repo_config_dict:
         description:
             - A dictionary in yaml format of valid configuration values. These
@@ -321,14 +326,17 @@ VALID_RCLASSES = [LOCAL_RCLASS, REMOTE_RCLASS, VIRTUAL_RCLASS]
 
 VALID_PACKAGETYPES = ["bower",
                       "chef",
-                      "cocoapads",
+                      "cocoapods",
                       "composer",
                       "conan",
+                      "conda",
+                      "cran",
                       "debian",
                       "docker",
                       "gems",
                       "generic",
                       "gitlfs",
+                      "go",
                       "gradle",
                       "helm",
                       "ivy",
@@ -336,11 +344,14 @@ VALID_PACKAGETYPES = ["bower",
                       "npm",
                       "nuget",
                       "opkg",
+                      "p2",
                       "puppet",
                       "pypi",
                       "rpm",
                       "sbt",
-                      "vagrant"]
+                      "vagrant",
+                      "vcs"
+                     ]
 
 KEY_CONFIG_MAP = {
     "rclass":
