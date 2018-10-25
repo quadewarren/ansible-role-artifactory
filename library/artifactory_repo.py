@@ -350,7 +350,8 @@ VALID_PACKAGETYPES = ["bower",
                       "rpm",
                       "sbt",
                       "vagrant",
-                      "vcs"]
+                      "vcs"
+                     ]
 
 KEY_CONFIG_MAP = {
     "rclass":
