@@ -254,6 +254,11 @@ class ArtifactoryBase(object):
                     result[k] = order_dict_sort_list(v)
                 elif isinstance(v, list):
                     result[k] = sorted(v)
+                elif isinstance(v, str):
+                    if v.isdigit():
+                        result[k] = int(v)
+                    else:
+                        result[k] = v
                 else:
                     result[k] = v
             return result
