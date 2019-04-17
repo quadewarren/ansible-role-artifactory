@@ -31,6 +31,7 @@ import ast
 import json
 
 from ansible.module_utils.six import iteritems
+from ansible.module_utils.six.moves.urllib.parse import quote
 from ansible.module_utils.urls import open_url
 
 """
@@ -77,7 +78,9 @@ class ArtifactoryBase(object):
             self.headers["X-JFrog-Art-Api"] = auth_token
 
         if self.name:
-            self.working_url = '%s/%s' % (self.artifactory_url, self.name)
+            # escape invalid url characters
+            self.working_url = '%s/%s' % (self.artifactory_url,
+                                          quote(self.name))
         else:
             self.working_url = self.artifactory_url
 
@@ -91,6 +94,7 @@ class ArtifactoryBase(object):
         return self.query_artifactory(self.working_url, 'DELETE')
 
     def create_artifactory_target(self):
+        # This is not a mistake. POST == PUT in artifactory land
         method = 'PUT'
         serial_config_data = self.get_valid_conf(method)
         create_target_url = self.working_url
@@ -98,6 +102,7 @@ class ArtifactoryBase(object):
                                       data=serial_config_data)
 
     def update_artifactory_target(self):
+        # This is not a mistake. PUT == POST in artifactory land
         method = 'POST'
         serial_config_data = self.get_valid_conf(method)
         return self.query_artifactory(self.working_url, method,
