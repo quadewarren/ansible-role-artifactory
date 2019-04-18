@@ -315,6 +315,11 @@ def main():
         sec_dict.update(perm_config)
     if perm_config_dict:
         sec_dict.update(perm_config_dict)
+    # Artifactory stores the name as lowercase (even if it was passed as
+    # multi-case). Calls against that name after it is created will fail
+    # since artifactory only recognizes the lower case name.
+    sec_dict['name'] = sec_dict['name'].lower()
+    name = name.lower()
     perm_config = str(sec_dict)
 
     result['original_message'] = ("Perform state '%s' against target '%s' "

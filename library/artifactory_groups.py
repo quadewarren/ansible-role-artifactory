@@ -264,6 +264,11 @@ def main():
         sec_dict.update(group_config)
     if group_config_dict:
         sec_dict.update(group_config_dict)
+    # Artifactory stores the group name as lowercase (even if it was passed as
+    # multi-case). Calls against that group after it is created will fail
+    # since artifactory only recognizes the lower case name.
+    sec_dict['name'] = sec_dict['name'].lower()
+    name = name.lower()
     group_config = str(sec_dict)
 
     result['original_message'] = ("Perform state '%s' against target '%s' "
