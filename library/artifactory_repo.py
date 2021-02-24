@@ -150,6 +150,7 @@ options:
             - The packageType of the repository.
         required: false
         choices:
+          - alpine
           - bower
           - chef
           - cocoapods
@@ -324,7 +325,8 @@ VIRTUAL_RCLASS = "virtual"
 
 VALID_RCLASSES = [LOCAL_RCLASS, REMOTE_RCLASS, VIRTUAL_RCLASS]
 
-VALID_PACKAGETYPES = ["bower",
+VALID_PACKAGETYPES = ["alpine",
+                      "bower",
                       "chef",
                       "cocoapods",
                       "composer",
